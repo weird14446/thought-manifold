@@ -26,6 +26,7 @@ function Profile() {
 
     const [profileUser, setProfileUser] = useState(null);
     const [posts, setPosts] = useState([]);
+    const [userMetrics, setUserMetrics] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
@@ -50,12 +51,14 @@ function Profile() {
         const fetchData = async () => {
             try {
                 setLoading(true);
-                const [userData, userPosts] = await Promise.all([
+                const [userData, userPosts, metricsData] = await Promise.all([
                     usersAPI.getUser(targetUserId),
                     usersAPI.getUserPosts(targetUserId),
+                    usersAPI.getUserMetrics(targetUserId).catch(() => null),
                 ]);
                 setProfileUser(userData);
                 setPosts(userPosts);
+                setUserMetrics(metricsData);
                 setEditDisplayName(userData.display_name || userData.username || '');
                 setEditBio(userData.bio || '');
             } catch (err) {
@@ -234,6 +237,10 @@ function Profile() {
                             <div className="profile-stat">
                                 <span className="profile-stat-value">{totalViews}</span>
                                 <span className="profile-stat-label">총 조회수</span>
+                            </div>
+                            <div className="profile-stat">
+                                <span className="profile-stat-value">{userMetrics?.g_index ?? 0}</span>
+                                <span className="profile-stat-label">g-index</span>
                             </div>
                         </div>
                     </div>

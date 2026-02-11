@@ -1,4 +1,5 @@
 mod db;
+mod metrics;
 mod models;
 mod routes;
 
@@ -16,7 +17,11 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use routes::{auth_routes, posts_routes, users_routes, comments_routes, admin_routes};
+use routes::{admin_routes, auth_routes, comments_routes, metrics_routes, posts_routes, users_routes};
+
+fn frontend_dist_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../frontend/dist")
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -32,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Database setup
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "sqlite://database.db".to_string());
+        .unwrap_or_else(|_| "mysql://tm_user:tm_pass@127.0.0.1:3306/thought_manifold".to_string());
     
     let pool = db::init_db(&database_url).await?;
     tracing::info!("Database initialized");
@@ -41,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::fs::create_dir_all("uploads").await?;
 
     // Frontend build directory
-    let frontend_dir = PathBuf::from("../frontend/dist");
+    let frontend_dir = frontend_dist_dir();
 
     // CORS layer
     let cors = CorsLayer::new()
@@ -56,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
         .nest("/api/posts", posts_routes())
         .nest("/api/posts", comments_routes())
         .nest("/api/admin", admin_routes())
+        .nest("/api/metrics", metrics_routes())
         .route("/api/health", get(health_check));
 
     // Build the app
@@ -83,7 +89,7 @@ async fn health_check() -> impl IntoResponse {
 }
 
 async fn serve_spa() -> impl IntoResponse {
-    let frontend_dir = PathBuf::from("../frontend/dist");
+    let frontend_dir = frontend_dist_dir();
     let index_path = frontend_dir.join("index.html");
     
     match tokio::fs::read_to_string(&index_path).await {

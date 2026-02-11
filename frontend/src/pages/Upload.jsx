@@ -18,6 +18,7 @@ function Upload() {
     const [summary, setSummary] = useState('');
     const [category, setCategory] = useState('essay');
     const [tags, setTags] = useState('');
+    const [citations, setCitations] = useState('');
     const [file, setFile] = useState(null);
     const [dragActive, setDragActive] = useState(false);
     const [submitting, setSubmitting] = useState(false);
@@ -84,6 +85,7 @@ function Upload() {
                 summary: summary.trim() || undefined,
                 category,
                 tags: tags.trim() || undefined,
+                citations: category === 'paper' ? (citations.trim() || undefined) : undefined,
                 file: file || undefined,
             });
             navigate('/');
@@ -183,6 +185,24 @@ function Upload() {
                             onChange={(e) => setTags(e.target.value)}
                         />
                     </div>
+
+                    {category === 'paper' && (
+                        <div className="form-group">
+                            <label className="form-label" htmlFor="citations">
+                                인용 문헌 ID <span className="optional">(선택)</span>
+                            </label>
+                            <input
+                                id="citations"
+                                type="text"
+                                className="form-input"
+                                placeholder="쉼표로 구분된 게시글 ID (예: 12,34,56)"
+                                value={citations}
+                                onChange={(e) => setCitations(e.target.value)}
+                            />
+                            <span className="form-hint">논문 카테고리에서만 인용 문헌을 입력할 수 있습니다.</span>
+                            <span className="form-hint">본문의 `/posts/{'{'}ID{'}'}` 링크 또는 `cite:ID` 표기도 자동 인용으로 추출됩니다.</span>
+                        </div>
+                    )}
 
                     {/* Content */}
                     <div className="form-group">

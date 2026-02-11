@@ -6,9 +6,10 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use sqlx::SqlitePool;
+use sqlx::MySqlPool;
 
 use crate::models::{User, UserResponse};
+use crate::metrics::compute_author_metrics;
 use crate::routes::auth::extract_current_user;
 
 #[derive(Debug, Deserialize)]
@@ -17,16 +18,17 @@ pub struct UpdateProfile {
     pub bio: Option<String>,
 }
 
-pub fn users_routes() -> Router<SqlitePool> {
+pub fn users_routes() -> Router<MySqlPool> {
     Router::new()
         .route("/", get(list_users))
         .route("/me", axum::routing::put(update_profile))
         .route("/{user_id}", get(get_user))
+        .route("/{user_id}/metrics", get(get_user_metrics))
         .route("/{user_id}/posts", get(get_user_posts))
 }
 
 async fn list_users(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let users = sqlx::query_as::<_, User>("SELECT * FROM users LIMIT 20")
         .fetch_all(&pool)
@@ -40,7 +42,7 @@ async fn list_users(
 }
 
 async fn get_user(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     Path(user_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
@@ -57,8 +59,40 @@ async fn get_user(
     Ok(Json(UserResponse::from(user)))
 }
 
+async fn get_user_metrics(
+    State(pool): State<MySqlPool>,
+    Path(user_id): Path<i64>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let user_exists = sqlx::query("SELECT id FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
+        })?;
+
+    if user_exists.is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"detail": "User not found"})),
+        ));
+    }
+
+    let metrics = compute_author_metrics(&pool, user_id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": e.to_string()})),
+        )
+    })?;
+
+    Ok(Json(metrics))
+}
+
 async fn update_profile(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Json(input): Json<UpdateProfile>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -103,7 +137,7 @@ async fn update_profile(
 }
 
 async fn get_user_posts(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     Path(user_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     // Verify user exists
@@ -119,7 +153,27 @@ async fn get_user_posts(
         })?;
 
     let posts = sqlx::query_as::<_, crate::models::post::Post>(
-        "SELECT * FROM posts WHERE author_id = ? ORDER BY created_at DESC",
+        r#"
+        SELECT
+            p.id,
+            p.title,
+            p.content,
+            p.summary,
+            c.code AS category,
+            pf.file_path,
+            pf.file_name,
+            p.author_id,
+            COALESCE(ps.view_count, 0) AS view_count,
+            COALESCE(ps.like_count, 0) AS like_count,
+            p.created_at,
+            p.updated_at
+        FROM posts p
+        JOIN post_categories c ON c.id = p.category_id
+        LEFT JOIN post_files pf ON pf.post_id = p.id
+        LEFT JOIN post_stats ps ON ps.post_id = p.id
+        WHERE p.author_id = ?
+        ORDER BY p.created_at DESC
+        "#,
     )
     .bind(user_id)
     .fetch_all(&pool)

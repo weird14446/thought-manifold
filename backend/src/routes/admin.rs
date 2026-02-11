@@ -5,9 +5,11 @@ use axum::{
     routing::{delete, get, put},
     Router,
 };
+use chrono::{Datelike, Utc};
 use serde::Deserialize;
-use sqlx::SqlitePool;
+use sqlx::MySqlPool;
 
+use crate::metrics::compute_impact_factor;
 use crate::models::{User, UserResponse};
 use crate::routes::auth::extract_current_user;
 
@@ -15,7 +17,7 @@ use crate::routes::auth::extract_current_user;
 // Helper: Extract Admin User
 // ============================
 pub async fn extract_admin_user(
-    pool: &SqlitePool,
+    pool: &MySqlPool,
     headers: &HeaderMap,
 ) -> Result<User, (StatusCode, Json<serde_json::Value>)> {
     let user = extract_current_user(pool, headers).await?;
@@ -28,7 +30,7 @@ pub async fn extract_admin_user(
     Ok(user)
 }
 
-pub fn admin_routes() -> Router<SqlitePool> {
+pub fn admin_routes() -> Router<MySqlPool> {
     Router::new()
         .route("/stats", get(admin_stats))
         .route("/users", get(admin_list_users))
@@ -42,7 +44,7 @@ pub fn admin_routes() -> Router<SqlitePool> {
 // GET /admin/stats
 // ============================
 async fn admin_stats(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let _admin = extract_admin_user(&pool, &headers).await?;
@@ -69,7 +71,7 @@ async fn admin_stats(
         })?;
 
     let total_views: (i64,) =
-        sqlx::query_as("SELECT COALESCE(SUM(view_count), 0) FROM posts")
+        sqlx::query_as("SELECT CAST(COALESCE(SUM(view_count), 0) AS SIGNED) FROM post_stats")
             .fetch_one(&pool)
             .await
             .map_err(|e| {
@@ -77,12 +79,21 @@ async fn admin_stats(
             })?;
 
     let total_likes: (i64,) =
-        sqlx::query_as("SELECT COALESCE(SUM(like_count), 0) FROM posts")
+        sqlx::query_as("SELECT CAST(COALESCE(SUM(like_count), 0) AS SIGNED) FROM post_stats")
             .fetch_one(&pool)
             .await
             .map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
             })?;
+
+    let journal_metrics = compute_impact_factor(&pool, Utc::now().year())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
+        })?;
 
     Ok(Json(serde_json::json!({
         "total_users": user_count.0,
@@ -90,6 +101,7 @@ async fn admin_stats(
         "total_comments": comment_count.0,
         "total_views": total_views.0,
         "total_likes": total_likes.0,
+        "journal_metrics": journal_metrics,
     })))
 }
 
@@ -97,7 +109,7 @@ async fn admin_stats(
 // GET /admin/users
 // ============================
 async fn admin_list_users(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let _admin = extract_admin_user(&pool, &headers).await?;
@@ -157,7 +169,7 @@ struct UpdateRole {
 }
 
 async fn admin_update_role(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path(user_id): Path<i64>,
     Json(input): Json<UpdateRole>,
@@ -208,7 +220,7 @@ async fn admin_update_role(
 // DELETE /admin/users/:id
 // ============================
 async fn admin_delete_user(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path(user_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -238,6 +250,24 @@ async fn admin_delete_user(
         .map_err(|e| {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
         })?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM post_citations
+        WHERE citing_post_id IN (SELECT id FROM posts WHERE author_id = ?)
+           OR cited_post_id IN (SELECT id FROM posts WHERE author_id = ?)
+        "#,
+    )
+    .bind(user_id)
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": e.to_string()})),
+        )
+    })?;
 
     sqlx::query("DELETE FROM posts WHERE author_id = ?")
         .bind(user_id)
@@ -269,7 +299,7 @@ async fn admin_delete_user(
 // DELETE /admin/posts/:id
 // ============================
 async fn admin_delete_post(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path(post_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -290,6 +320,18 @@ async fn admin_delete_post(
         .await
         .map_err(|e| {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+        })?;
+
+    sqlx::query("DELETE FROM post_citations WHERE citing_post_id = ? OR cited_post_id = ?")
+        .bind(post_id)
+        .bind(post_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let result = sqlx::query("DELETE FROM posts WHERE id = ?")
@@ -314,7 +356,7 @@ async fn admin_delete_post(
 // DELETE /admin/comments/:id
 // ============================
 async fn admin_delete_comment(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path(comment_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {

@@ -148,6 +148,14 @@ function Admin() {
                             <h3>총 좋아요</h3>
                             <div className="stat-value">{stats.total_likes}</div>
                         </div>
+                        <div className="admin-stat-card">
+                            <h3>Impact Factor ({stats.journal_metrics?.year || '-'})</h3>
+                            <div className="stat-value">
+                                {typeof stats.journal_metrics?.impact_factor === 'number'
+                                    ? stats.journal_metrics.impact_factor.toFixed(3)
+                                    : '-'}
+                            </div>
+                        </div>
                     </div>
                 )}
 

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use sqlx::FromRow;
+use super::metrics::PostMetrics;
 use super::user::UserResponse;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -33,6 +34,7 @@ pub struct PostResponse {
     pub view_count: i64,
     pub like_count: i64,
     pub user_liked: Option<bool>,
+    pub metrics: PostMetrics,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
     pub tags: Vec<String>,

@@ -22,6 +22,8 @@ function EditPost() {
     const [summary, setSummary] = useState('');
     const [category, setCategory] = useState('essay');
     const [tags, setTags] = useState('');
+    const [citations, setCitations] = useState('');
+    const [citationsTouched, setCitationsTouched] = useState(false);
     const [file, setFile] = useState(null);
     const [existingFile, setExistingFile] = useState(null);
     const [removeFile, setRemoveFile] = useState(false);
@@ -45,6 +47,8 @@ function EditPost() {
                 if (data.tags) {
                     setTags(data.tags.join(', '));
                 }
+                setCitations('');
+                setCitationsTouched(false);
                 if (data.file_name) {
                     setExistingFile({ name: data.file_name, path: data.file_path });
                 }
@@ -129,12 +133,18 @@ function EditPost() {
         setSubmitting(true);
 
         try {
+            const citationsPayload =
+                category === 'paper'
+                    ? (citationsTouched ? citations.trim() : undefined)
+                    : '';
+
             await postsAPI.updatePost(id, {
                 title: title.trim(),
                 content: content.trim(),
                 summary: summary.trim() || '',
                 category,
                 tags: tags.trim() || undefined,
+                citations: citationsPayload,
                 file: file || undefined,
                 removeFile: removeFile,
             });
@@ -251,6 +261,27 @@ function EditPost() {
                             onChange={(e) => setTags(e.target.value)}
                         />
                     </div>
+
+                    {category === 'paper' && (
+                        <div className="form-group">
+                            <label className="form-label" htmlFor="citations">
+                                인용 문헌 ID <span className="optional">(선택)</span>
+                            </label>
+                            <input
+                                id="citations"
+                                type="text"
+                                className="form-input"
+                                placeholder="쉼표로 구분된 게시글 ID (입력 시 전체 교체, 예: 12,34,56)"
+                                value={citations}
+                                onChange={(e) => {
+                                    setCitations(e.target.value);
+                                    setCitationsTouched(true);
+                                }}
+                            />
+                            <span className="form-hint">비워두면 기존 인용 관계를 유지합니다.</span>
+                            <span className="form-hint">본문의 `/posts/{'{'}ID{'}'}` 링크 또는 `cite:ID` 표기도 자동 인용으로 추출됩니다.</span>
+                        </div>
+                    )}
 
                     {/* Content */}
                     <div className="form-group">

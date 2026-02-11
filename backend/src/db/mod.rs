@@ -1,63 +1,88 @@
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
-use std::path::Path;
+use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
 
-pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
-    // Extract file path from SQLite URL
-    let db_path = database_url.strip_prefix("sqlite://").unwrap_or(database_url);
-    
-    // Create database file if it doesn't exist
-    if !Path::new(db_path).exists() {
-        std::fs::File::create(db_path).expect("Failed to create database file");
-    }
-    
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
+    let pool = MySqlPoolOptions::new()
+        .max_connections(10)
         .connect(database_url)
         .await?;
-    
-    // Run migrations
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            hashed_password TEXT,
-            google_id TEXT UNIQUE,
-            display_name TEXT,
-            bio TEXT,
-            avatar_url TEXT,
-            is_admin BOOLEAN DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME
-        )
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(191) NOT NULL UNIQUE,
+            email VARCHAR(191) NOT NULL UNIQUE,
+            hashed_password VARCHAR(255) NULL,
+            google_id VARCHAR(191) NULL UNIQUE,
+            display_name VARCHAR(255) NULL,
+            bio TEXT NULL,
+            avatar_url TEXT NULL,
+            is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            updated_at DATETIME(6) NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         "#,
     )
     .execute(&pool)
     .await?;
 
-    // Add is_admin column if it doesn't exist (for existing databases)
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0")
-        .execute(&pool)
-        .await;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS post_categories (
+            id SMALLINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(64) NOT NULL UNIQUE,
+            display_name VARCHAR(128) NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        "#,
+    )
+    .execute(&pool)
+    .await?;
 
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            content TEXT NOT NULL,
-            summary TEXT,
-            category TEXT DEFAULT 'other',
-            file_path TEXT,
-            file_name TEXT,
-            author_id INTEGER NOT NULL,
-            view_count INTEGER DEFAULT 0,
-            like_count INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME,
-            FOREIGN KEY (author_id) REFERENCES users(id)
-        )
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            title VARCHAR(255) NOT NULL,
+            content LONGTEXT NOT NULL,
+            summary TEXT NULL,
+            category_id SMALLINT UNSIGNED NOT NULL,
+            author_id BIGINT NOT NULL,
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            updated_at DATETIME(6) NULL,
+            INDEX idx_posts_author_id (author_id),
+            INDEX idx_posts_category_created_at (category_id, created_at),
+            CONSTRAINT fk_posts_category_id FOREIGN KEY (category_id) REFERENCES post_categories(id),
+            CONSTRAINT fk_posts_author_id FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS post_files (
+            post_id BIGINT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            file_name VARCHAR(255) NOT NULL,
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            updated_at DATETIME(6) NULL,
+            CONSTRAINT fk_post_files_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS post_stats (
+            post_id BIGINT PRIMARY KEY,
+            view_count BIGINT NOT NULL DEFAULT 0,
+            like_count BIGINT NOT NULL DEFAULT 0,
+            updated_at DATETIME(6) NULL,
+            CONSTRAINT fk_post_stats_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         "#,
     )
     .execute(&pool)
@@ -66,14 +91,15 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS post_likes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            post_id INTEGER NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
-            UNIQUE(user_id, post_id)
-        )
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            post_id BIGINT NOT NULL,
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            UNIQUE KEY uq_post_likes_user_post (user_id, post_id),
+            INDEX idx_post_likes_post_id (post_id),
+            CONSTRAINT fk_post_likes_user_id FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            CONSTRAINT fk_post_likes_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         "#,
     )
     .execute(&pool)
@@ -82,15 +108,17 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS comments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            post_id INTEGER NOT NULL,
-            author_id INTEGER NOT NULL,
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            post_id BIGINT NOT NULL,
+            author_id BIGINT NOT NULL,
             content TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME,
-            FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
-            FOREIGN KEY (author_id) REFERENCES users(id)
-        )
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            updated_at DATETIME(6) NULL,
+            INDEX idx_comments_post_id_created_at (post_id, created_at),
+            INDEX idx_comments_author_id (author_id),
+            CONSTRAINT fk_comments_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+            CONSTRAINT fk_comments_author_id FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         "#,
     )
     .execute(&pool)
@@ -99,9 +127,9 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS tags (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL
-        )
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(191) NOT NULL UNIQUE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         "#,
     )
     .execute(&pool)
@@ -110,18 +138,73 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS post_tags (
-            post_id INTEGER NOT NULL,
-            tag_id INTEGER NOT NULL,
+            post_id BIGINT NOT NULL,
+            tag_id BIGINT NOT NULL,
             PRIMARY KEY (post_id, tag_id),
-            FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
-            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
-        )
+            INDEX idx_post_tags_tag_id (tag_id),
+            CONSTRAINT fk_post_tags_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+            CONSTRAINT fk_post_tags_tag_id FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         "#,
     )
     .execute(&pool)
     .await?;
 
-    // Auto-promote admin user from ADMIN_USERNAME env var
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS citation_sources (
+            id TINYINT UNSIGNED PRIMARY KEY,
+            code VARCHAR(32) NOT NULL UNIQUE,
+            display_name VARCHAR(128) NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS post_citations (
+            citing_post_id BIGINT NOT NULL,
+            cited_post_id BIGINT NOT NULL,
+            citation_source_id TINYINT UNSIGNED NOT NULL,
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            PRIMARY KEY (citing_post_id, cited_post_id, citation_source_id),
+            CONSTRAINT chk_post_citations_no_self CHECK (citing_post_id <> cited_post_id),
+            INDEX idx_post_citations_citation_source_id (citation_source_id),
+            INDEX idx_post_citations_cited_post_id (cited_post_id),
+            CONSTRAINT fk_post_citations_citing_post_id FOREIGN KEY (citing_post_id) REFERENCES posts(id) ON DELETE CASCADE,
+            CONSTRAINT fk_post_citations_cited_post_id FOREIGN KEY (cited_post_id) REFERENCES posts(id) ON DELETE CASCADE,
+            CONSTRAINT fk_post_citations_source_id FOREIGN KEY (citation_source_id) REFERENCES citation_sources(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT IGNORE INTO post_categories (code, display_name) VALUES
+            ('paper', 'Paper'),
+            ('essay', 'Essay'),
+            ('note', 'Note'),
+            ('report', 'Report'),
+            ('other', 'Other')
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT IGNORE INTO citation_sources (id, code, display_name) VALUES
+            (1, 'manual', 'Manual citation'),
+            (2, 'auto', 'Automatic citation')
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
     if let Ok(admin_username) = std::env::var("ADMIN_USERNAME") {
         if !admin_username.is_empty() {
             let _ = sqlx::query("UPDATE users SET is_admin = 1 WHERE username = ?")

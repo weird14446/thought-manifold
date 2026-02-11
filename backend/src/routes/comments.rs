@@ -6,7 +6,7 @@ use axum::{
     Router,
 };
 use chrono::{DateTime, Utc};
-use sqlx::SqlitePool;
+use sqlx::MySqlPool;
 use sqlx::FromRow;
 
 use crate::models::{Comment, CommentResponse, CreateComment, User, UserResponse};
@@ -30,7 +30,7 @@ struct CommentWithAuthorRow {
     user_created_at: DateTime<Utc>,
 }
 
-pub fn comments_routes() -> Router<SqlitePool> {
+pub fn comments_routes() -> Router<MySqlPool> {
     Router::new()
         .route(
             "/{post_id}/comments",
@@ -43,7 +43,7 @@ pub fn comments_routes() -> Router<SqlitePool> {
 }
 
 async fn list_comments(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     Path(post_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let rows = sqlx::query_as::<_, CommentWithAuthorRow>(
@@ -112,7 +112,7 @@ async fn list_comments(
 }
 
 async fn create_comment(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path(post_id): Path<i64>,
     Json(input): Json<CreateComment>,
@@ -162,7 +162,7 @@ async fn create_comment(
     })?;
 
     let comment = sqlx::query_as::<_, Comment>("SELECT * FROM comments WHERE id = ?")
-        .bind(result.last_insert_rowid())
+        .bind(result.last_insert_id() as i64)
         .fetch_one(&pool)
         .await
         .map_err(|e| {
@@ -187,7 +187,7 @@ async fn create_comment(
 }
 
 async fn delete_comment(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path((post_id, comment_id)): Path<(i64, i64)>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {

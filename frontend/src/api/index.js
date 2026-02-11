@@ -60,6 +60,7 @@ export const postsAPI = {
         if (postData.summary) formData.append('summary', postData.summary);
         formData.append('category', postData.category || 'other');
         if (postData.tags?.trim()) formData.append('tags', postData.tags.trim());
+        if (postData.citations?.trim()) formData.append('citations', postData.citations.trim());
         if (postData.file) formData.append('file', postData.file);
 
         const response = await api.post('/posts', formData, {
@@ -82,6 +83,9 @@ export const postsAPI = {
         if (postData.summary !== undefined) formData.append('summary', postData.summary || '');
         formData.append('category', postData.category || 'other');
         if (postData.tags?.trim()) formData.append('tags', postData.tags.trim());
+        if (postData.citations !== undefined) {
+            formData.append('citations', (postData.citations || '').trim());
+        }
         if (postData.removeFile) formData.append('remove_file', 'true');
         if (postData.file) formData.append('file', postData.file);
 
@@ -108,6 +112,10 @@ export const usersAPI = {
     },
     getUserPosts: async (userId) => {
         const response = await api.get(`/users/${userId}/posts`);
+        return response.data;
+    },
+    getUserMetrics: async (userId) => {
+        const response = await api.get(`/users/${userId}/metrics`);
         return response.data;
     },
 };
@@ -152,6 +160,15 @@ export const adminAPI = {
     },
     deleteComment: async (commentId) => {
         const response = await api.delete(`/admin/comments/${commentId}`);
+        return response.data;
+    },
+};
+
+export const metricsAPI = {
+    getJournalMetrics: async (year = null) => {
+        const params = {};
+        if (year) params.year = year;
+        const response = await api.get('/metrics/journal', { params });
         return response.data;
     },
 };

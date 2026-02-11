@@ -19,6 +19,44 @@ const categoryEmojis = {
     other: '📁',
 };
 
+const POST_DETAIL_CACHE_TTL_MS = 2000;
+const postDetailRequestCache = new Map();
+
+function getPostDeduped(postId) {
+    const now = Date.now();
+    const cached = postDetailRequestCache.get(postId);
+
+    if (cached?.data && now - cached.timestamp < POST_DETAIL_CACHE_TTL_MS) {
+        return Promise.resolve(cached.data);
+    }
+
+    if (cached?.promise) {
+        return cached.promise;
+    }
+
+    const promise = postsAPI.getPost(postId)
+        .then((data) => {
+            postDetailRequestCache.set(postId, {
+                data,
+                timestamp: Date.now(),
+                promise: null,
+            });
+            return data;
+        })
+        .catch((error) => {
+            postDetailRequestCache.delete(postId);
+            throw error;
+        });
+
+    postDetailRequestCache.set(postId, {
+        data: cached?.data || null,
+        timestamp: cached?.timestamp || 0,
+        promise,
+    });
+
+    return promise;
+}
+
 function PostDetail() {
     const { id } = useParams();
     const navigate = useNavigate();
@@ -39,13 +77,19 @@ function PostDetail() {
     const [commentError, setCommentError] = useState(null);
 
     useEffect(() => {
+        let cancelled = false;
+
         const fetchPost = async () => {
             try {
-                setLoading(true);
-                const data = await postsAPI.getPost(id);
+                if (!cancelled) {
+                    setLoading(true);
+                }
+                const data = await getPostDeduped(id);
+                if (cancelled) return;
                 setPost(data);
                 setUserLiked(data.user_liked ?? false);
             } catch (err) {
+                if (cancelled) return;
                 console.error('Failed to fetch post:', err);
                 if (err.response?.status === 404) {
                     setError('글을 찾을 수 없습니다.');
@@ -53,19 +97,27 @@ function PostDetail() {
                     setError('글을 불러오는데 실패했습니다.');
                 }
             } finally {
-                setLoading(false);
+                if (!cancelled) {
+                    setLoading(false);
+                }
             }
         };
         const fetchComments = async () => {
             try {
                 const data = await commentsAPI.list(id);
+                if (cancelled) return;
                 setComments(data);
             } catch (err) {
+                if (cancelled) return;
                 console.error('Failed to fetch comments:', err);
             }
         };
         fetchPost();
         fetchComments();
+
+        return () => {
+            cancelled = true;
+        };
     }, [id]);
 
     const handleLike = async () => {
@@ -228,8 +280,12 @@ function PostDetail() {
                                     </div>
                                 </div>
                                 <div className="post-detail-stats">
+                                    <span className="post-detail-stat">🆔 {post.id}</span>
                                     <span className="post-detail-stat">👁️ {post.view_count}</span>
                                     <span className="post-detail-stat">❤️ {post.like_count}</span>
+                                    {post.metrics?.citation_count !== undefined && (
+                                        <span className="post-detail-stat">📚 {post.metrics.citation_count}</span>
+                                    )}
                                 </div>
                             </div>
                         </header>

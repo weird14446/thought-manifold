@@ -10,7 +10,7 @@ use chrono::Utc;
 use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::MySqlPool;
 
 use crate::models::{User, UserResponse, CreateUser, TokenResponse};
 
@@ -20,7 +20,7 @@ pub struct Claims {
     pub exp: usize,
 }
 
-pub fn auth_routes() -> Router<SqlitePool> {
+pub fn auth_routes() -> Router<MySqlPool> {
     Router::new()
         .route("/register", post(register))
         .route("/login", post(login))
@@ -34,7 +34,7 @@ pub fn auth_routes() -> Router<SqlitePool> {
 // ============================
 
 async fn register(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     Json(input): Json<CreateUser>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     // Check if user exists
@@ -80,7 +80,7 @@ async fn register(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
     })?;
 
-    let user_id = result.last_insert_rowid();
+    let user_id = result.last_insert_id() as i64;
 
     let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
         .bind(user_id)
@@ -100,7 +100,7 @@ pub struct LoginForm {
 }
 
 async fn login(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     axum::Form(input): axum::Form<LoginForm>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
@@ -141,7 +141,7 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::HeaderMap;
 
 async fn get_me(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let auth_header = headers
@@ -181,7 +181,7 @@ async fn get_me(
 }
 
 pub async fn extract_current_user(
-    pool: &SqlitePool,
+    pool: &MySqlPool,
     headers: &HeaderMap,
 ) -> Result<User, (StatusCode, Json<serde_json::Value>)> {
     let auth_header = headers
@@ -219,7 +219,7 @@ pub async fn extract_current_user(
 }
 
 pub async fn extract_optional_user(
-    pool: &SqlitePool,
+    pool: &MySqlPool,
     headers: &HeaderMap,
 ) -> Result<Option<User>, (StatusCode, Json<serde_json::Value>)> {
     let Some(auth_header) = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
@@ -402,7 +402,7 @@ struct GoogleUserInfo {
 }
 
 async fn google_callback(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Query(params): Query<GoogleCallbackParams>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -580,7 +580,7 @@ async fn google_callback(
                     })?;
 
                     sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
-                        .bind(result.last_insert_rowid())
+                        .bind(result.last_insert_id() as i64)
                         .fetch_one(&pool)
                         .await
                         .map_err(|e| {

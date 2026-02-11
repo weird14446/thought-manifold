@@ -6,23 +6,48 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
-use sqlx::{QueryBuilder, Sqlite, SqlitePool};
+use sqlx::{QueryBuilder, MySql, MySqlPool};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path as FsPath, PathBuf},
 };
 use uuid::Uuid;
 
-use crate::models::{Post, PostListResponse, PostQuery, PostResponse, User, UserResponse};
+use crate::metrics::{compute_citation_count, compute_citation_counts_for_posts, METRIC_VERSION};
+use crate::models::{Post, PostListResponse, PostMetrics, PostQuery, PostResponse, User, UserResponse};
 use crate::routes::auth::{extract_current_user, extract_optional_user};
 
 const MAX_UPLOAD_SIZE_BYTES: usize = 10 * 1024 * 1024;
 const MULTIPART_BODY_LIMIT_BYTES: usize = 12 * 1024 * 1024;
+const PAPER_CATEGORY: &str = "paper";
+const CITATION_SOURCE_MANUAL: u8 = 1;
+const CITATION_SOURCE_AUTO: u8 = 2;
+const POST_SELECT_FROM_CLAUSE: &str = r#"
+    FROM posts p
+    JOIN post_categories c ON c.id = p.category_id
+    LEFT JOIN post_files pf ON pf.post_id = p.id
+    LEFT JOIN post_stats ps ON ps.post_id = p.id
+"#;
+const POST_SELECT_COLUMNS: &str = r#"
+    SELECT
+        p.id,
+        p.title,
+        p.content,
+        p.summary,
+        c.code AS category,
+        pf.file_path,
+        pf.file_name,
+        p.author_id,
+        COALESCE(ps.view_count, 0) AS view_count,
+        COALESCE(ps.like_count, 0) AS like_count,
+        p.created_at,
+        p.updated_at
+"#;
 const ALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
     "pdf", "doc", "docx", "txt", "md", "pptx", "xlsx", "zip", "png", "jpg", "jpeg", "gif",
 ];
 
-pub fn posts_routes() -> Router<SqlitePool> {
+pub fn posts_routes() -> Router<MySqlPool> {
     Router::new()
         .route("/", get(list_posts).post(create_post))
         .route("/{post_id}", get(get_post).put(update_post).delete(delete_post))
@@ -32,14 +57,15 @@ pub fn posts_routes() -> Router<SqlitePool> {
 }
 
 async fn list_posts(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     Query(query): Query<PostQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(10).clamp(1, 100);
     let offset = i64::from(page - 1) * i64::from(per_page);
 
-    let mut posts_qb = QueryBuilder::<Sqlite>::new("SELECT p.* FROM posts p");
+    let mut posts_qb =
+        QueryBuilder::<MySql>::new(format!("{}{}", POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE));
     push_post_filters(&mut posts_qb, &query);
     posts_qb.push(" ORDER BY p.created_at DESC LIMIT ");
     posts_qb.push_bind(i64::from(per_page));
@@ -52,7 +78,8 @@ async fn list_posts(
         .await
         .map_err(internal_error)?;
 
-    let mut count_qb = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM posts p");
+    let mut count_qb =
+        QueryBuilder::<MySql>::new("SELECT COUNT(*) FROM posts p JOIN post_categories c ON c.id = p.category_id");
     push_post_filters(&mut count_qb, &query);
     let (total,): (i64,) = count_qb
         .build_query_as()
@@ -64,6 +91,10 @@ async fn list_posts(
         .await
         .map_err(internal_error)?;
     let tags_map = fetch_tags_map(&pool, &posts).await.map_err(internal_error)?;
+    let post_ids: Vec<i64> = posts.iter().map(|post| post.id).collect();
+    let citation_count_map = compute_citation_counts_for_posts(&pool, &post_ids)
+        .await
+        .map_err(internal_error)?;
 
     let mut post_responses = Vec::with_capacity(posts.len());
     for post in posts {
@@ -75,6 +106,7 @@ async fn list_posts(
         })?;
 
         let tags = tags_map.get(&post.id).cloned().unwrap_or_default();
+        let citation_count = *citation_count_map.get(&post.id).unwrap_or(&0);
 
         post_responses.push(PostResponse {
             id: post.id,
@@ -89,6 +121,10 @@ async fn list_posts(
             view_count: post.view_count,
             like_count: post.like_count,
             user_liked: None,
+            metrics: PostMetrics {
+                citation_count,
+                metric_version: METRIC_VERSION.to_string(),
+            },
             created_at: post.created_at,
             updated_at: post.updated_at,
             tags,
@@ -104,11 +140,12 @@ async fn list_posts(
 }
 
 async fn get_post(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path(post_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let post = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE id = ?")
+    let post_query = format!("{}{} WHERE p.id = ?", POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE);
+    let post = sqlx::query_as::<_, Post>(&post_query)
         .bind(post_id)
         .fetch_optional(&pool)
         .await
@@ -120,8 +157,15 @@ async fn get_post(
             )
         })?;
 
-    sqlx::query("UPDATE posts SET view_count = view_count + 1 WHERE id = ?")
+    sqlx::query(
+        r#"
+        INSERT INTO post_stats (post_id, view_count, like_count, updated_at)
+        VALUES (?, 1, 0, ?)
+        ON DUPLICATE KEY UPDATE view_count = view_count + 1, updated_at = VALUES(updated_at)
+        "#,
+    )
         .bind(post_id)
+        .bind(Utc::now())
         .execute(&pool)
         .await
         .map_err(internal_error)?;
@@ -133,6 +177,9 @@ async fn get_post(
         .map_err(internal_error)?;
 
     let tags = fetch_tags(&pool, post.id).await.unwrap_or_default();
+    let citation_count = compute_citation_count(&pool, post.id)
+        .await
+        .map_err(internal_error)?;
     let current_user = extract_optional_user(&pool, &headers).await?;
     let user_liked = if let Some(user) = current_user {
         Some(
@@ -157,6 +204,10 @@ async fn get_post(
         view_count: post.view_count + 1,
         like_count: post.like_count,
         user_liked,
+        metrics: PostMetrics {
+            citation_count,
+            metric_version: METRIC_VERSION.to_string(),
+        },
         created_at: post.created_at,
         updated_at: post.updated_at,
         tags,
@@ -164,7 +215,7 @@ async fn get_post(
 }
 
 async fn create_post(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -177,6 +228,7 @@ async fn create_post(
     let mut file_path: Option<String> = None;
     let mut file_name: Option<String> = None;
     let mut tags_str = String::new();
+    let mut citations_str: Option<String> = None;
 
     while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
         let name = field.name().unwrap_or_default().to_string();
@@ -196,6 +248,9 @@ async fn create_post(
             }
             "tags" => {
                 tags_str = field.text().await.map_err(multipart_error)?;
+            }
+            "citations" => {
+                citations_str = Some(field.text().await.map_err(multipart_error)?);
             }
             "file" => {
                 if let Some(original_name) = field.file_name() {
@@ -234,24 +289,52 @@ async fn create_post(
         ));
     }
 
+    let (category_id, category_code) = resolve_or_create_category(&pool, &category).await?;
+    let manual_citation_ids =
+        prepare_citations_for_create(&pool, &category_code, citations_str.as_deref()).await?;
+    let auto_citation_ids =
+        prepare_auto_citations_for_content(&pool, &category_code, &content, None).await?;
+
     let now = Utc::now();
     let result = sqlx::query(
-        r#"INSERT INTO posts (title, content, summary, category, file_path, file_name, author_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
+        r#"INSERT INTO posts (title, content, summary, category_id, author_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&title)
     .bind(&content)
     .bind(&summary)
-    .bind(&category)
-    .bind(&file_path)
-    .bind(&file_name)
+    .bind(category_id)
     .bind(current_user.id)
     .bind(now)
     .execute(&pool)
     .await
     .map_err(internal_error)?;
 
-    let post_id = result.last_insert_rowid();
+    let post_id = result.last_insert_id() as i64;
+
+    sqlx::query("INSERT INTO post_stats (post_id, view_count, like_count, updated_at) VALUES (?, 0, 0, ?)")
+        .bind(post_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(internal_error)?;
+
+    if let (Some(saved_path), Some(saved_name)) = (file_path.as_ref(), file_name.as_ref()) {
+        sqlx::query(
+            "INSERT INTO post_files (post_id, file_path, file_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(post_id)
+        .bind(saved_path)
+        .bind(saved_name)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(internal_error)?;
+    }
+
+    replace_post_citations(&pool, post_id, &manual_citation_ids).await?;
+    replace_post_auto_citations(&pool, post_id, &auto_citation_ids).await?;
 
     let tags_vec = process_tags(&pool, post_id, &tags_str).await.map_err(|e| {
         (
@@ -260,9 +343,13 @@ async fn create_post(
         )
     })?;
 
-    let post = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE id = ?")
+    let post_query = format!("{}{} WHERE p.id = ?", POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE);
+    let post = sqlx::query_as::<_, Post>(&post_query)
         .bind(post_id)
         .fetch_one(&pool)
+        .await
+        .map_err(internal_error)?;
+    let citation_count = compute_citation_count(&pool, post_id)
         .await
         .map_err(internal_error)?;
 
@@ -281,6 +368,10 @@ async fn create_post(
             view_count: post.view_count,
             like_count: post.like_count,
             user_liked: Some(false),
+            metrics: PostMetrics {
+                citation_count,
+                metric_version: METRIC_VERSION.to_string(),
+            },
             created_at: post.created_at,
             updated_at: post.updated_at,
             tags: tags_vec,
@@ -289,14 +380,15 @@ async fn create_post(
 }
 
 async fn update_post(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path(post_id): Path<i64>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let current_user = extract_current_user(&pool, &headers).await?;
 
-    let post = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE id = ?")
+    let post_query = format!("{}{} WHERE p.id = ?", POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE);
+    let post = sqlx::query_as::<_, Post>(&post_query)
         .bind(post_id)
         .fetch_optional(&pool)
         .await
@@ -322,7 +414,9 @@ async fn update_post(
     let mut file_path = post.file_path.clone();
     let mut file_name = post.file_name.clone();
     let mut remove_file = false;
+    let mut file_changed = false;
     let mut tags_str: Option<String> = None;
+    let mut citations_str: Option<String> = None;
     let mut replacement_file: Option<(String, Vec<u8>)> = None;
 
     while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
@@ -352,6 +446,9 @@ async fn update_post(
             }
             "tags" => {
                 tags_str = Some(field.text().await.map_err(multipart_error)?);
+            }
+            "citations" => {
+                citations_str = Some(field.text().await.map_err(multipart_error)?);
             }
             "remove_file" => {
                 let val = field.text().await.map_err(multipart_error)?;
@@ -391,29 +488,65 @@ async fn update_post(
 
         file_path = Some(upload_path.to_string_lossy().to_string());
         file_name = Some(new_original_name);
+        file_changed = true;
     } else if remove_file && file_path.is_some() {
         if let Some(ref path) = post.file_path {
             let _ = tokio::fs::remove_file(path).await;
         }
         file_path = None;
         file_name = None;
+        file_changed = true;
     }
+
+    let (category_id, category_code) = resolve_or_create_category(&pool, &category).await?;
+    let manual_citation_ids = if let Some(raw) = citations_str.as_deref() {
+        Some(prepare_citations_for_update(&pool, post_id, &category_code, raw).await?)
+    } else {
+        None
+    };
 
     let now = Utc::now();
     sqlx::query(
-        "UPDATE posts SET title = ?, content = ?, summary = ?, category = ?, file_path = ?, file_name = ?, updated_at = ? WHERE id = ?",
+        "UPDATE posts SET title = ?, content = ?, summary = ?, category_id = ?, updated_at = ? WHERE id = ?",
     )
     .bind(&title)
     .bind(&content)
     .bind(&summary)
-    .bind(&category)
-    .bind(&file_path)
-    .bind(&file_name)
+    .bind(category_id)
     .bind(now)
     .bind(post_id)
     .execute(&pool)
     .await
     .map_err(internal_error)?;
+
+    if file_changed {
+        if let (Some(saved_path), Some(saved_name)) = (file_path.as_ref(), file_name.as_ref()) {
+            sqlx::query(
+                r#"
+                INSERT INTO post_files (post_id, file_path, file_name, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    file_path = VALUES(file_path),
+                    file_name = VALUES(file_name),
+                    updated_at = VALUES(updated_at)
+                "#,
+            )
+            .bind(post_id)
+            .bind(saved_path)
+            .bind(saved_name)
+            .bind(now)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .map_err(internal_error)?;
+        } else {
+            sqlx::query("DELETE FROM post_files WHERE post_id = ?")
+                .bind(post_id)
+                .execute(&pool)
+                .await
+                .map_err(internal_error)?;
+        }
+    }
 
     let tags_vec = if let Some(t_str) = tags_str {
         process_tags(&pool, post_id, &t_str).await.map_err(|e| {
@@ -426,13 +559,29 @@ async fn update_post(
         fetch_tags(&pool, post_id).await.unwrap_or_default()
     };
 
-    let updated_post = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE id = ?")
+    if category_code != PAPER_CATEGORY {
+        clear_all_post_citations(&pool, post_id).await?;
+    } else {
+        if let Some(ids) = manual_citation_ids {
+            replace_post_citations(&pool, post_id, &ids).await?;
+        }
+
+        let auto_citation_ids =
+            prepare_auto_citations_for_content(&pool, &category_code, &content, Some(post_id))
+                .await?;
+        replace_post_auto_citations(&pool, post_id, &auto_citation_ids).await?;
+    }
+
+    let updated_post = sqlx::query_as::<_, Post>(&post_query)
         .bind(post_id)
         .fetch_one(&pool)
         .await
         .map_err(internal_error)?;
 
     let user_liked = fetch_user_liked(&pool, current_user.id, post_id)
+        .await
+        .map_err(internal_error)?;
+    let citation_count = compute_citation_count(&pool, post_id)
         .await
         .map_err(internal_error)?;
 
@@ -449,6 +598,10 @@ async fn update_post(
         view_count: updated_post.view_count,
         like_count: updated_post.like_count,
         user_liked: Some(user_liked),
+        metrics: PostMetrics {
+            citation_count,
+            metric_version: METRIC_VERSION.to_string(),
+        },
         created_at: updated_post.created_at,
         updated_at: updated_post.updated_at,
         tags: tags_vec,
@@ -456,13 +609,14 @@ async fn update_post(
 }
 
 async fn delete_post(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path(post_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let current_user = extract_current_user(&pool, &headers).await?;
 
-    let post = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE id = ?")
+    let post_query = format!("{}{} WHERE p.id = ?", POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE);
+    let post = sqlx::query_as::<_, Post>(&post_query)
         .bind(post_id)
         .fetch_optional(&pool)
         .await
@@ -485,6 +639,8 @@ async fn delete_post(
         let _ = tokio::fs::remove_file(path).await;
     }
 
+    clear_all_post_citations(&pool, post_id).await?;
+
     sqlx::query("DELETE FROM posts WHERE id = ?")
         .bind(post_id)
         .execute(&pool)
@@ -497,7 +653,7 @@ async fn delete_post(
 }
 
 async fn like_post(
-    State(pool): State<SqlitePool>,
+    State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path(post_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -547,9 +703,16 @@ async fn like_post(
         .await
         .map_err(internal_error)?;
 
-    sqlx::query("UPDATE posts SET like_count = ? WHERE id = ?")
-        .bind(new_count)
+    sqlx::query(
+        r#"
+        INSERT INTO post_stats (post_id, view_count, like_count, updated_at)
+        VALUES (?, 0, ?, ?)
+        ON DUPLICATE KEY UPDATE like_count = VALUES(like_count), updated_at = VALUES(updated_at)
+        "#,
+    )
         .bind(post_id)
+        .bind(new_count)
+        .bind(Utc::now())
         .execute(&pool)
         .await
         .map_err(internal_error)?;
@@ -561,12 +724,12 @@ async fn like_post(
     })))
 }
 
-fn push_post_filters(query_builder: &mut QueryBuilder<Sqlite>, query: &PostQuery) {
+fn push_post_filters(query_builder: &mut QueryBuilder<MySql>, query: &PostQuery) {
     let mut has_where = false;
 
     if let Some(category) = query.category.as_ref() {
         push_condition(query_builder, &mut has_where);
-        query_builder.push("p.category = ");
+        query_builder.push("c.code = ");
         query_builder.push_bind(category.clone());
     }
 
@@ -590,7 +753,7 @@ fn push_post_filters(query_builder: &mut QueryBuilder<Sqlite>, query: &PostQuery
     }
 }
 
-fn push_condition(query_builder: &mut QueryBuilder<Sqlite>, has_where: &mut bool) {
+fn push_condition(query_builder: &mut QueryBuilder<MySql>, has_where: &mut bool) {
     if *has_where {
         query_builder.push(" AND ");
     } else {
@@ -638,7 +801,7 @@ fn validate_upload_file(
     Ok(())
 }
 
-async fn fetch_user_liked(pool: &SqlitePool, user_id: i64, post_id: i64) -> Result<bool, sqlx::Error> {
+async fn fetch_user_liked(pool: &MySqlPool, user_id: i64, post_id: i64) -> Result<bool, sqlx::Error> {
     let liked = sqlx::query("SELECT 1 FROM post_likes WHERE user_id = ? AND post_id = ?")
         .bind(user_id)
         .bind(post_id)
@@ -649,7 +812,7 @@ async fn fetch_user_liked(pool: &SqlitePool, user_id: i64, post_id: i64) -> Resu
 }
 
 async fn fetch_authors_map(
-    pool: &SqlitePool,
+    pool: &MySqlPool,
     posts: &[Post],
 ) -> Result<HashMap<i64, UserResponse>, sqlx::Error> {
     let author_ids: Vec<i64> = posts
@@ -663,7 +826,7 @@ async fn fetch_authors_map(
         return Ok(HashMap::new());
     }
 
-    let mut query_builder = QueryBuilder::<Sqlite>::new("SELECT * FROM users WHERE id IN (");
+    let mut query_builder = QueryBuilder::<MySql>::new("SELECT * FROM users WHERE id IN (");
     {
         let mut separated = query_builder.separated(", ");
         for author_id in &author_ids {
@@ -680,14 +843,14 @@ async fn fetch_authors_map(
         .collect())
 }
 
-async fn fetch_tags_map(pool: &SqlitePool, posts: &[Post]) -> Result<HashMap<i64, Vec<String>>, sqlx::Error> {
+async fn fetch_tags_map(pool: &MySqlPool, posts: &[Post]) -> Result<HashMap<i64, Vec<String>>, sqlx::Error> {
     let post_ids: Vec<i64> = posts.iter().map(|post| post.id).collect();
 
     if post_ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let mut query_builder = QueryBuilder::<Sqlite>::new(
+    let mut query_builder = QueryBuilder::<MySql>::new(
         "SELECT pt.post_id, t.name FROM post_tags pt JOIN tags t ON t.id = pt.tag_id WHERE pt.post_id IN (",
     );
     {
@@ -708,7 +871,7 @@ async fn fetch_tags_map(pool: &SqlitePool, posts: &[Post]) -> Result<HashMap<i64
     Ok(tags_by_post)
 }
 
-async fn fetch_tags(pool: &SqlitePool, post_id: i64) -> Result<Vec<String>, sqlx::Error> {
+async fn fetch_tags(pool: &MySqlPool, post_id: i64) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT t.name FROM tags t JOIN post_tags pt ON t.id = pt.tag_id WHERE pt.post_id = ?",
     )
@@ -720,7 +883,7 @@ async fn fetch_tags(pool: &SqlitePool, post_id: i64) -> Result<Vec<String>, sqlx
 }
 
 async fn process_tags(
-    pool: &SqlitePool,
+    pool: &MySqlPool,
     post_id: i64,
     tags_str: &str,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -750,10 +913,10 @@ async fn process_tags(
                     .bind(&tag)
                     .execute(pool)
                     .await?;
-                res.last_insert_rowid()
+                res.last_insert_id() as i64
             };
 
-        let _ = sqlx::query("INSERT OR IGNORE INTO post_tags (post_id, tag_id) VALUES (?, ?)")
+        let _ = sqlx::query("INSERT IGNORE INTO post_tags (post_id, tag_id) VALUES (?, ?)")
             .bind(post_id)
             .bind(tag_id)
             .execute(pool)
@@ -763,6 +926,351 @@ async fn process_tags(
     }
 
     Ok(final_tags)
+}
+
+async fn prepare_citations_for_create(
+    pool: &MySqlPool,
+    category: &str,
+    citations_raw: Option<&str>,
+) -> Result<Vec<i64>, (StatusCode, Json<serde_json::Value>)> {
+    if category != PAPER_CATEGORY {
+        if citations_raw.unwrap_or_default().trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "detail": "Citations are only allowed for paper category posts"
+            })),
+        ));
+    }
+
+    let citation_ids = parse_citation_ids(citations_raw.unwrap_or_default())?;
+    validate_citation_targets(pool, &citation_ids).await?;
+    Ok(citation_ids)
+}
+
+async fn prepare_citations_for_update(
+    pool: &MySqlPool,
+    post_id: i64,
+    category: &str,
+    citations_raw: &str,
+) -> Result<Vec<i64>, (StatusCode, Json<serde_json::Value>)> {
+    if category != PAPER_CATEGORY {
+        if citations_raw.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "detail": "Citations are only allowed for paper category posts"
+            })),
+        ));
+    }
+
+    let citation_ids = parse_citation_ids(citations_raw)?;
+    if citation_ids.contains(&post_id) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "Self-citation is not allowed"})),
+        ));
+    }
+
+    validate_citation_targets(pool, &citation_ids).await?;
+    Ok(citation_ids)
+}
+
+async fn prepare_auto_citations_for_content(
+    pool: &MySqlPool,
+    category: &str,
+    content: &str,
+    current_post_id: Option<i64>,
+) -> Result<Vec<i64>, (StatusCode, Json<serde_json::Value>)> {
+    if category != PAPER_CATEGORY {
+        return Ok(Vec::new());
+    }
+
+    let mut citation_ids = extract_auto_citation_ids(content);
+    if let Some(post_id) = current_post_id {
+        citation_ids.retain(|id| *id != post_id);
+    }
+
+    validate_citation_targets(pool, &citation_ids).await?;
+    Ok(citation_ids)
+}
+
+fn parse_citation_ids(raw: &str) -> Result<Vec<i64>, (StatusCode, Json<serde_json::Value>)> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut seen = HashSet::new();
+    let mut citation_ids = Vec::new();
+
+    for token in raw.split(',') {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let parsed = trimmed.parse::<i64>().map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "detail": "Citations must be comma-separated numeric post IDs"
+                })),
+            )
+        })?;
+
+        if parsed <= 0 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"detail": "Citation post IDs must be positive integers"})),
+            ));
+        }
+
+        if seen.insert(parsed) {
+            citation_ids.push(parsed);
+        }
+    }
+
+    Ok(citation_ids)
+}
+
+fn extract_auto_citation_ids(content: &str) -> Vec<i64> {
+    let mut ids = HashSet::new();
+    extract_ids_after_pattern(content, "/posts/", &mut ids);
+
+    let lowered = content.to_ascii_lowercase();
+    for marker in ["cite:", "citation:", "post:", "cite#", "citation#", "post#"] {
+        extract_ids_after_pattern(&lowered, marker, &mut ids);
+    }
+
+    let mut result: Vec<i64> = ids.into_iter().collect();
+    result.sort_unstable();
+    result
+}
+
+fn extract_ids_after_pattern(content: &str, pattern: &str, target: &mut HashSet<i64>) {
+    let bytes = content.as_bytes();
+    let mut cursor = 0usize;
+
+    while cursor < content.len() {
+        let Some(found) = content[cursor..].find(pattern) else {
+            break;
+        };
+
+        let start = cursor + found + pattern.len();
+        let mut end = start;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+
+        if end > start {
+            if let Ok(id_str) = std::str::from_utf8(&bytes[start..end]) {
+                if let Ok(id) = id_str.parse::<i64>() {
+                    if id > 0 {
+                        target.insert(id);
+                    }
+                }
+            }
+        }
+
+        cursor = start;
+    }
+}
+
+async fn validate_citation_targets(
+    pool: &MySqlPool,
+    citation_ids: &[i64],
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if citation_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut query_builder = QueryBuilder::<MySql>::new(
+        "SELECT p.id FROM posts p JOIN post_categories c ON c.id = p.category_id WHERE c.code = 'paper' AND p.id IN (",
+    );
+    {
+        let mut separated = query_builder.separated(", ");
+        for citation_id in citation_ids {
+            separated.push_bind(citation_id);
+        }
+    }
+    query_builder.push(")");
+
+    let rows: Vec<(i64,)> = query_builder
+        .build_query_as()
+        .fetch_all(pool)
+        .await
+        .map_err(internal_error)?;
+    let valid_ids: HashSet<i64> = rows.into_iter().map(|(id,)| id).collect();
+
+    if valid_ids.len() != citation_ids.len() {
+        let invalid_ids: Vec<String> = citation_ids
+            .iter()
+            .filter(|id| !valid_ids.contains(id))
+            .map(|id| id.to_string())
+            .collect();
+
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "detail": format!("Invalid citation target post IDs: {}", invalid_ids.join(", "))
+            })),
+        ));
+    }
+
+    Ok(())
+}
+
+fn normalize_category_code(raw: &str) -> String {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        "other".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn category_display_name(code: &str) -> String {
+    code
+        .split('_')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut titled = String::new();
+                    titled.extend(first.to_uppercase());
+                    titled.push_str(chars.as_str());
+                    titled
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+async fn resolve_or_create_category(
+    pool: &MySqlPool,
+    raw_category: &str,
+) -> Result<(i64, String), (StatusCode, Json<serde_json::Value>)> {
+    let code = normalize_category_code(raw_category);
+
+    if let Some((id, existing_code)) =
+        sqlx::query_as::<_, (i64, String)>(
+            "SELECT CAST(id AS SIGNED) AS id, code FROM post_categories WHERE code = ?",
+        )
+            .bind(&code)
+            .fetch_optional(pool)
+            .await
+            .map_err(internal_error)?
+    {
+        return Ok((id, existing_code));
+    }
+
+    let display_name = category_display_name(&code);
+    let insert_result = sqlx::query("INSERT INTO post_categories (code, display_name) VALUES (?, ?)")
+        .bind(&code)
+        .bind(&display_name)
+        .execute(pool)
+        .await;
+
+    if let Err(error) = insert_result {
+        match &error {
+            sqlx::Error::Database(db_error) if db_error.code().as_deref() == Some("1062") => {}
+            _ => return Err(internal_error(error)),
+        }
+    }
+
+    let (id, existing_code): (i64, String) =
+        sqlx::query_as("SELECT CAST(id AS SIGNED) AS id, code FROM post_categories WHERE code = ?")
+            .bind(&code)
+            .fetch_one(pool)
+            .await
+            .map_err(internal_error)?;
+
+    Ok((id, existing_code))
+}
+
+async fn clear_all_post_citations(
+    pool: &MySqlPool,
+    post_id: i64,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    sqlx::query("DELETE FROM post_citations WHERE citing_post_id = ? OR cited_post_id = ?")
+        .bind(post_id)
+        .bind(post_id)
+        .execute(pool)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(())
+}
+
+async fn replace_post_citations(
+    pool: &MySqlPool,
+    post_id: i64,
+    citation_ids: &[i64],
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    sqlx::query("DELETE FROM post_citations WHERE citing_post_id = ? AND citation_source_id = ?")
+        .bind(post_id)
+        .bind(CITATION_SOURCE_MANUAL)
+        .execute(pool)
+        .await
+        .map_err(internal_error)?;
+
+    for cited_post_id in citation_ids {
+        if *cited_post_id == post_id {
+            continue;
+        }
+        sqlx::query(
+            "INSERT IGNORE INTO post_citations (citing_post_id, cited_post_id, citation_source_id, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(post_id)
+        .bind(cited_post_id)
+        .bind(CITATION_SOURCE_MANUAL)
+        .bind(Utc::now())
+        .execute(pool)
+        .await
+        .map_err(internal_error)?;
+    }
+
+    Ok(())
+}
+
+async fn replace_post_auto_citations(
+    pool: &MySqlPool,
+    post_id: i64,
+    citation_ids: &[i64],
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    sqlx::query("DELETE FROM post_citations WHERE citing_post_id = ? AND citation_source_id = ?")
+        .bind(post_id)
+        .bind(CITATION_SOURCE_AUTO)
+        .execute(pool)
+        .await
+        .map_err(internal_error)?;
+
+    for cited_post_id in citation_ids {
+        if *cited_post_id == post_id {
+            continue;
+        }
+        sqlx::query(
+            "INSERT IGNORE INTO post_citations (citing_post_id, cited_post_id, citation_source_id, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(post_id)
+        .bind(cited_post_id)
+        .bind(CITATION_SOURCE_AUTO)
+        .bind(Utc::now())
+        .execute(pool)
+        .await
+        .map_err(internal_error)?;
+    }
+
+    Ok(())
 }
 
 fn internal_error<E: ToString>(error: E) -> (StatusCode, Json<serde_json::Value>) {
