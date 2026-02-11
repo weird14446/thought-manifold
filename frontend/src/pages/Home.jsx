@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { PostCard } from '../components';
 import { postsAPI } from '../api';
 
@@ -12,6 +12,7 @@ const categories = [
 ];
 
 function Home() {
+    const [searchParams, setSearchParams] = useSearchParams();
     const [posts, setPosts] = useState([]);
     const [totalPosts, setTotalPosts] = useState(0);
     const [selectedCategory, setSelectedCategory] = useState('all');
@@ -19,6 +20,8 @@ function Home() {
     const [debouncedSearch, setDebouncedSearch] = useState('');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+
+    const tagFilter = searchParams.get('tag');
 
     // Debounce search input
     useEffect(() => {
@@ -36,7 +39,7 @@ function Home() {
         try {
             const category = selectedCategory === 'all' ? null : selectedCategory;
             const search = debouncedSearch || null;
-            const data = await postsAPI.getPosts(1, 12, category, search);
+            const data = await postsAPI.getPosts(1, 12, category, search, tagFilter);
             setPosts(data.posts || []);
             setTotalPosts(data.total || 0);
         } catch (err) {
@@ -46,11 +49,15 @@ function Home() {
         } finally {
             setLoading(false);
         }
-    }, [selectedCategory, debouncedSearch]);
+    }, [selectedCategory, debouncedSearch, tagFilter]);
 
     useEffect(() => {
         fetchPosts();
     }, [fetchPosts]);
+
+    const clearTagFilter = () => {
+        setSearchParams({});
+    };
 
     // Loading skeleton
     const renderSkeleton = () => (
@@ -124,13 +131,25 @@ function Home() {
             <section className="posts-section">
                 <div className="container">
                     <div className="section-header">
-                        <h2 className="section-title">최신 글</h2>
+                        <div className="header-left">
+                            <h2 className="section-title">
+                                {tagFilter ? `#${tagFilter} 태그 검색 결과` : '최신 글'}
+                            </h2>
+                            {tagFilter && (
+                                <button onClick={clearTagFilter} className="clear-filter-btn">
+                                    필터 해제 ✕
+                                </button>
+                            )}
+                        </div>
                         <div className="category-tabs">
                             {categories.map(cat => (
                                 <button
                                     key={cat.key}
                                     className={`category-tab ${selectedCategory === cat.key ? 'active' : ''}`}
-                                    onClick={() => setSelectedCategory(cat.key)}
+                                    onClick={() => {
+                                        setSelectedCategory(cat.key);
+                                        if (tagFilter) clearTagFilter();
+                                    }}
                                 >
                                     {cat.label}
                                 </button>

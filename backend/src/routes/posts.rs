@@ -68,6 +68,38 @@ async fn list_posts(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
         
         (posts, count.0)
+    } else if let Some(ref tag) = query.tag {
+        let posts = sqlx::query_as::<_, Post>(
+            r#"
+            SELECT p.* FROM posts p
+            JOIN post_tags pt ON p.id = pt.post_id
+            JOIN tags t ON pt.tag_id = t.id
+            WHERE t.name = ?
+            ORDER BY p.created_at DESC
+            LIMIT ? OFFSET ?
+            "#
+        )
+        .bind(tag)
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
+
+        let count: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) FROM posts p
+            JOIN post_tags pt ON p.id = pt.post_id
+            JOIN tags t ON pt.tag_id = t.id
+            WHERE t.name = ?
+            "#
+        )
+            .bind(tag)
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
+        
+        (posts, count.0)
     } else {
         let posts = sqlx::query_as::<_, Post>(
             "SELECT * FROM posts ORDER BY created_at DESC LIMIT ? OFFSET ?"
@@ -86,7 +118,7 @@ async fn list_posts(
         (posts, count.0)
     };
 
-    // Get authors for each post
+    // Get authors and tags for each post
     let mut post_responses = Vec::new();
     for post in posts {
         let author = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
@@ -94,6 +126,8 @@ async fn list_posts(
             .fetch_one(&pool)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
+
+        let tags = fetch_tags(&pool, post.id).await.unwrap_or_default();
 
         post_responses.push(PostResponse {
             id: post.id,
@@ -109,6 +143,7 @@ async fn list_posts(
             like_count: post.like_count,
             created_at: post.created_at,
             updated_at: post.updated_at,
+            tags,
         });
     }
 
@@ -144,6 +179,8 @@ async fn get_post(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
 
+    let tags = fetch_tags(&pool, post.id).await.unwrap_or_default();
+
     Ok(Json(PostResponse {
         id: post.id,
         title: post.title,
@@ -158,6 +195,7 @@ async fn get_post(
         like_count: post.like_count,
         created_at: post.created_at,
         updated_at: post.updated_at,
+        tags,
     }))
 }
 
@@ -174,6 +212,7 @@ async fn create_post(
     let mut category = "other".to_string();
     let mut file_path: Option<String> = None;
     let mut file_name: Option<String> = None;
+    let mut tags_str = String::new();
 
     while let Some(field) = multipart.next_field().await.map_err(|e| {
         (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
@@ -198,6 +237,11 @@ async fn create_post(
             }
             "category" => {
                 category = field.text().await.map_err(|e| {
+                    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
+                })?;
+            }
+            "tags" => {
+                tags_str = field.text().await.map_err(|e| {
                     (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
                 })?;
             }
@@ -250,6 +294,12 @@ async fn create_post(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
 
     let post_id = result.last_insert_rowid();
+
+    // Process Tags
+    let tags_vec = process_tags(&pool, post_id, &tags_str).await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+    })?;
+
     let post = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE id = ?")
         .bind(post_id)
         .fetch_one(&pool)
@@ -270,6 +320,7 @@ async fn create_post(
         like_count: post.like_count,
         created_at: post.created_at,
         updated_at: post.updated_at,
+        tags: tags_vec,
     })))
 }
 
@@ -299,6 +350,7 @@ async fn update_post(
     let mut file_path = post.file_path.clone();
     let mut file_name = post.file_name.clone();
     let mut remove_file = false;
+    let mut tags_str: Option<String> = None;
 
     while let Some(field) = multipart.next_field().await.map_err(|e| {
         (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
@@ -328,6 +380,11 @@ async fn update_post(
                     (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
                 })?;
                 if !val.is_empty() { category = val; }
+            }
+            "tags" => {
+                tags_str = Some(field.text().await.map_err(|e| {
+                    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
+                })?);
             }
             "remove_file" => {
                 let val = field.text().await.map_err(|e| {
@@ -393,6 +450,15 @@ async fn update_post(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
 
+    // Process Tags if provided
+    let tags_vec = if let Some(t_str) = tags_str {
+        process_tags(&pool, post_id, &t_str).await.map_err(|e| {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+        })?
+    } else {
+        fetch_tags(&pool, post_id).await.unwrap_or_default()
+    };
+
     let updated_post = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE id = ?")
         .bind(post_id)
         .fetch_one(&pool)
@@ -413,6 +479,7 @@ async fn update_post(
         like_count: updated_post.like_count,
         created_at: updated_post.created_at,
         updated_at: updated_post.updated_at,
+        tags: tags_vec,
     }))
 }
 
@@ -438,6 +505,8 @@ async fn delete_post(
     if let Some(ref path) = post.file_path {
         let _ = tokio::fs::remove_file(path).await;
     }
+
+    // Tags will be deleted via ON DELETE CASCADE in post_tags
 
     sqlx::query("DELETE FROM posts WHERE id = ?")
         .bind(post_id)
@@ -508,5 +577,63 @@ async fn like_post(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
 
     Ok(Json(serde_json::json!({"message": if user_liked { "Post liked" } else { "Post unliked" }, "like_count": new_count, "user_liked": user_liked})))
+}
+
+// Helpers
+async fn fetch_tags(pool: &SqlitePool, post_id: i64) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT t.name FROM tags t JOIN post_tags pt ON t.id = pt.tag_id WHERE pt.post_id = ?"
+    )
+    .bind(post_id)
+    .fetch_all(pool)
+    .await?;
+    
+    Ok(rows.into_iter().map(|(name,)| name).collect())
+}
+
+async fn process_tags(pool: &SqlitePool, post_id: i64, tags_str: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    // Clear existing tags for this post
+    sqlx::query("DELETE FROM post_tags WHERE post_id = ?")
+        .bind(post_id)
+        .execute(pool)
+        .await?;
+
+    let tags: Vec<String> = tags_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    
+    // Deduplicate logic if needed, but let's just insert
+    let mut final_tags = Vec::new();
+
+    for tag in tags {
+        // Find or create tag
+        let tag_id: i64 = if let Some(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tags WHERE name = ?")
+            .bind(&tag)
+            .fetch_optional(pool)
+            .await? 
+        {
+            row.0
+        } else {
+            let res = sqlx::query("INSERT INTO tags (name) VALUES (?)")
+                .bind(&tag)
+                .execute(pool)
+                .await?;
+            res.last_insert_rowid()
+        };
+
+        // Link post to tag
+        // Ignore duplicate links if user provided same tag twice in string
+        let _ = sqlx::query("INSERT OR IGNORE INTO post_tags (post_id, tag_id) VALUES (?, ?)")
+            .bind(post_id)
+            .bind(tag_id)
+            .execute(pool)
+            .await;
+
+        final_tags.push(tag);
+    }
+
+    Ok(final_tags)
 }
 

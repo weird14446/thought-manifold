@@ -21,6 +21,7 @@ function EditPost() {
     const [content, setContent] = useState('');
     const [summary, setSummary] = useState('');
     const [category, setCategory] = useState('essay');
+    const [tags, setTags] = useState('');
     const [file, setFile] = useState(null);
     const [existingFile, setExistingFile] = useState(null);
     const [removeFile, setRemoveFile] = useState(false);
@@ -41,6 +42,9 @@ function EditPost() {
                 setContent(data.content);
                 setSummary(data.summary || '');
                 setCategory(data.category);
+                if (data.tags) {
+                    setTags(data.tags.join(', '));
+                }
                 if (data.file_name) {
                     setExistingFile({ name: data.file_name, path: data.file_path });
                 }
@@ -130,6 +134,7 @@ function EditPost() {
                 content: content.trim(),
                 summary: summary.trim() || '',
                 category,
+                tags: tags.trim() || undefined,
                 file: file || undefined,
                 removeFile: removeFile,
             });
@@ -214,6 +219,8 @@ function EditPost() {
                         <span className="form-hint">{title.length}/200</span>
                     </div>
 
+
+
                     {/* Summary */}
                     <div className="form-group">
                         <label className="form-label" htmlFor="summary">
@@ -227,6 +234,21 @@ function EditPost() {
                             value={summary}
                             onChange={(e) => setSummary(e.target.value)}
                             maxLength={300}
+                        />
+                    </div>
+
+                    {/* Tags */}
+                    <div className="form-group">
+                        <label className="form-label" htmlFor="tags">
+                            태그 <span className="optional">(선택)</span>
+                        </label>
+                        <input
+                            id="tags"
+                            type="text"
+                            className="form-input"
+                            placeholder="태그를 입력하세요 (쉼표로 구분)"
+                            value={tags}
+                            onChange={(e) => setTags(e.target.value)}
                         />
                     </div>
 
@@ -341,8 +363,8 @@ function EditPost() {
                         </button>
                     </div>
                 </form>
-            </div>
-        </main>
+            </div >
+        </main >
     );
 }
 

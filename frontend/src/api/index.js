@@ -41,10 +41,11 @@ export const authAPI = {
 
 // Posts API
 export const postsAPI = {
-    getPosts: async (page = 1, perPage = 10, category = null, search = null) => {
+    getPosts: async (page = 1, perPage = 10, category = null, search = null, tag = null) => {
         const params = { page, per_page: perPage };
         if (category) params.category = category;
         if (search) params.search = search;
+        if (tag) params.tag = tag;
         const response = await api.get('/posts', { params });
         return response.data;
     },

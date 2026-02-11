@@ -17,6 +17,7 @@ function Upload() {
     const [content, setContent] = useState('');
     const [summary, setSummary] = useState('');
     const [category, setCategory] = useState('essay');
+    const [tags, setTags] = useState('');
     const [file, setFile] = useState(null);
     const [dragActive, setDragActive] = useState(false);
     const [submitting, setSubmitting] = useState(false);
@@ -82,6 +83,7 @@ function Upload() {
                 content: content.trim(),
                 summary: summary.trim() || undefined,
                 category,
+                tags: tags.trim() || undefined,
                 file: file || undefined,
             });
             navigate('/');
@@ -149,6 +151,8 @@ function Upload() {
                         <span className="form-hint">{title.length}/200</span>
                     </div>
 
+
+
                     {/* Summary */}
                     <div className="form-group">
                         <label className="form-label" htmlFor="summary">
@@ -162,6 +166,21 @@ function Upload() {
                             value={summary}
                             onChange={(e) => setSummary(e.target.value)}
                             maxLength={300}
+                        />
+                    </div>
+
+                    {/* Tags */}
+                    <div className="form-group">
+                        <label className="form-label" htmlFor="tags">
+                            태그 <span className="optional">(선택)</span>
+                        </label>
+                        <input
+                            id="tags"
+                            type="text"
+                            className="form-input"
+                            placeholder="태그를 입력하세요 (쉼표로 구분, 예: 공부, 리액트, 일상)"
+                            value={tags}
+                            onChange={(e) => setTags(e.target.value)}
                         />
                     </div>
 
@@ -255,8 +274,8 @@ function Upload() {
                         </button>
                     </div>
                 </form>
-            </div>
-        </main>
+            </div >
+        </main >
     );
 }
 

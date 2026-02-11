@@ -223,6 +223,15 @@ function PostDetail() {
                             ))}
                         </div>
 
+                        {/* Tags */}
+                        {post.tags && post.tags.length > 0 && (
+                            <div className="post-detail-tags">
+                                {post.tags.map(tag => (
+                                    <Link key={tag} to={`/?tag=${tag}`} className="post-tag-large">#{tag}</Link>
+                                ))}
+                            </div>
+                        )}
+
                         {/* PDF Preview */}
                         {isPdf && (
                             <div className="pdf-preview-section">

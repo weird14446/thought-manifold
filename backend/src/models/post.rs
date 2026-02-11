@@ -34,6 +34,7 @@ pub struct PostResponse {
     pub like_count: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,4 +51,5 @@ pub struct PostQuery {
     pub per_page: Option<i32>,
     pub category: Option<String>,
     pub search: Option<String>,
+    pub tag: Option<String>,
 }

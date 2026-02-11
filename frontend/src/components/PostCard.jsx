@@ -37,6 +37,20 @@ function PostCard({ post }) {
                 <p className="post-excerpt">
                     {post.summary || post.content.slice(0, 150) + '...'}
                 </p>
+                {post.tags && post.tags.length > 0 && (
+                    <div className="post-card-tags">
+                        {post.tags.map(tag => (
+                            <Link
+                                key={tag}
+                                to={`/?tag=${tag}`}
+                                className="post-tag"
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                #{tag}
+                            </Link>
+                        ))}
+                    </div>
+                )}
             </div>
 
             <div className="post-card-footer">
