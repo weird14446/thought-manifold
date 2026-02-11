@@ -5,11 +5,30 @@ use axum::{
     routing::get,
     Router,
 };
+use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
-use chrono::Utc;
+use sqlx::FromRow;
 
 use crate::models::{Comment, CommentResponse, CreateComment, User, UserResponse};
 use crate::routes::auth::extract_current_user;
+
+#[derive(Debug, FromRow)]
+struct CommentWithAuthorRow {
+    comment_id: i64,
+    post_id: i64,
+    author_id: i64,
+    content: String,
+    comment_created_at: DateTime<Utc>,
+    comment_updated_at: Option<DateTime<Utc>>,
+    user_id: i64,
+    username: String,
+    email: String,
+    display_name: Option<String>,
+    bio: Option<String>,
+    avatar_url: Option<String>,
+    is_admin: bool,
+    user_created_at: DateTime<Utc>,
+}
 
 pub fn comments_routes() -> Router<SqlitePool> {
     Router::new()
@@ -27,8 +46,28 @@ async fn list_comments(
     State(pool): State<SqlitePool>,
     Path(post_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let comments = sqlx::query_as::<_, Comment>(
-        "SELECT * FROM comments WHERE post_id = ? ORDER BY created_at ASC",
+    let rows = sqlx::query_as::<_, CommentWithAuthorRow>(
+        r#"
+        SELECT
+            c.id AS comment_id,
+            c.post_id AS post_id,
+            c.author_id AS author_id,
+            c.content AS content,
+            c.created_at AS comment_created_at,
+            c.updated_at AS comment_updated_at,
+            u.id AS user_id,
+            u.username AS username,
+            u.email AS email,
+            u.display_name AS display_name,
+            u.bio AS bio,
+            u.avatar_url AS avatar_url,
+            u.is_admin AS is_admin,
+            u.created_at AS user_created_at
+        FROM comments c
+        JOIN users u ON u.id = c.author_id
+        WHERE c.post_id = ?
+        ORDER BY c.created_at ASC
+        "#,
     )
     .bind(post_id)
     .fetch_all(&pool)
@@ -40,29 +79,34 @@ async fn list_comments(
         )
     })?;
 
-    let mut responses = Vec::new();
-    for comment in comments {
-        let author = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
-            .bind(comment.author_id)
-            .fetch_one(&pool)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"detail": e.to_string()})),
-                )
-            })?;
+    let responses: Vec<CommentResponse> = rows
+        .into_iter()
+        .map(|row| {
+            let author = UserResponse::from(User {
+                id: row.user_id,
+                username: row.username,
+                email: row.email,
+                hashed_password: None,
+                google_id: None,
+                display_name: row.display_name,
+                bio: row.bio,
+                avatar_url: row.avatar_url,
+                is_admin: row.is_admin,
+                created_at: row.user_created_at,
+                updated_at: None,
+            });
 
-        responses.push(CommentResponse {
-            id: comment.id,
-            post_id: comment.post_id,
-            author_id: comment.author_id,
-            author: UserResponse::from(author),
-            content: comment.content,
-            created_at: comment.created_at,
-            updated_at: comment.updated_at,
-        });
-    }
+            CommentResponse {
+                id: row.comment_id,
+                post_id: row.post_id,
+                author_id: row.author_id,
+                author,
+                content: row.content,
+                created_at: row.comment_created_at,
+                updated_at: row.comment_updated_at,
+            }
+        })
+        .collect();
 
     Ok(Json(responses))
 }

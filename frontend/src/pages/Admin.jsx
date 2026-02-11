@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { adminAPI } from '../api';
+import { adminAPI, postsAPI } from '../api';
 import { useAuth } from '../context/AuthContext';
 
 function Admin() {
@@ -9,9 +9,12 @@ function Admin() {
 
     const [stats, setStats] = useState(null);
     const [users, setUsers] = useState([]);
+    const [managedPosts, setManagedPosts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [activeTab, setActiveTab] = useState('overview'); // overview, users
+    const [contentLoading, setContentLoading] = useState(true);
+    const [contentError, setContentError] = useState(null);
+    const [activeTab, setActiveTab] = useState('overview'); // overview, users, content
 
     useEffect(() => {
         if (!user || !user.is_admin) {
@@ -20,6 +23,7 @@ function Admin() {
         }
 
         fetchData();
+        fetchManagedPosts();
     }, [user, navigate]);
 
     const fetchData = async () => {
@@ -40,11 +44,25 @@ function Admin() {
         }
     };
 
+    const fetchManagedPosts = async () => {
+        try {
+            setContentLoading(true);
+            const data = await postsAPI.getPosts(1, 100, null, null, null);
+            setManagedPosts(data.posts || []);
+            setContentError(null);
+        } catch (err) {
+            console.error('Failed to fetch posts for admin:', err);
+            setContentError('게시글 목록을 불러오는데 실패했습니다.');
+        } finally {
+            setContentLoading(false);
+        }
+    };
+
     const handleRoleToggle = async (userId, currentStatus) => {
         if (!window.confirm(`이 사용자의 관리자 권한을 ${currentStatus ? '해제' : '부여'}하시겠습니까?`)) return;
         try {
             await adminAPI.updateUserRole(userId, !currentStatus);
-            fetchData(); // Refresh data
+            fetchData();
         } catch (err) {
             alert('권한 변경 실패: ' + (err.response?.data?.detail || err.message));
         }
@@ -55,8 +73,20 @@ function Admin() {
         try {
             await adminAPI.deleteUser(userId);
             fetchData();
+            fetchManagedPosts();
         } catch (err) {
             alert('사용자 삭제 실패: ' + (err.response?.data?.detail || err.message));
+        }
+    };
+
+    const handleDeletePost = async (postId) => {
+        if (!window.confirm('해당 게시글을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.')) return;
+        try {
+            await adminAPI.deletePost(postId);
+            fetchData();
+            fetchManagedPosts();
+        } catch (err) {
+            alert('게시글 삭제 실패: ' + (err.response?.data?.detail || err.message));
         }
     };
 
@@ -86,6 +116,12 @@ function Admin() {
                             onClick={() => setActiveTab('users')}
                         >
                             사용자 관리
+                        </button>
+                        <button
+                            className={`admin-tab ${activeTab === 'content' ? 'active' : ''}`}
+                            onClick={() => setActiveTab('content')}
+                        >
+                            콘텐츠 관리
                         </button>
                     </div>
                 </div>
@@ -134,9 +170,6 @@ function Admin() {
                                         <td>{u.id}</td>
                                         <td>
                                             <div className="admin-user-cell">
-                                                {/* <div className="admin-user-avatar">
-                                                    {u.avatar_url ? <img src={u.avatar_url} /> : (u.display_name?.[0] || u.username[0])}
-                                                </div> */}
                                                 <div>
                                                     <div className="admin-user-name">
                                                         <Link to={`/profile/${u.id}`}>{u.display_name || u.username}</Link>
@@ -158,7 +191,7 @@ function Admin() {
                                                     className="btn btn-sm btn-ghost"
                                                     onClick={() => handleRoleToggle(u.id, u.is_admin)}
                                                     disabled={u.id === user.id}
-                                                    title={u.is_admin ? "일반 사용자로 변경" : "관리자로 승격"}
+                                                    title={u.is_admin ? '일반 사용자로 변경' : '관리자로 승격'}
                                                 >
                                                     {u.is_admin ? '⬇️' : '⬆️'}
                                                 </button>
@@ -176,6 +209,68 @@ function Admin() {
                                 ))}
                             </tbody>
                         </table>
+                    </div>
+                )}
+
+                {activeTab === 'content' && (
+                    <div className="admin-table-container">
+                        {contentError ? (
+                            <div className="empty-state">
+                                <div className="empty-state-icon">⚠️</div>
+                                <h3>콘텐츠 로드 실패</h3>
+                                <p>{contentError}</p>
+                                <button className="btn btn-primary" onClick={fetchManagedPosts}>다시 시도</button>
+                            </div>
+                        ) : contentLoading ? (
+                            <div className="container" style={{ padding: '2rem' }}>Loading content...</div>
+                        ) : managedPosts.length === 0 ? (
+                            <div className="empty-state">
+                                <div className="empty-state-icon">📭</div>
+                                <h3>게시글이 없습니다</h3>
+                                <p>관리할 게시글이 아직 없습니다.</p>
+                            </div>
+                        ) : (
+                            <table className="admin-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>제목</th>
+                                        <th>작성자</th>
+                                        <th>카테고리</th>
+                                        <th>작성일</th>
+                                        <th>지표</th>
+                                        <th>관리</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {managedPosts.map(post => (
+                                        <tr key={post.id}>
+                                            <td>{post.id}</td>
+                                            <td>
+                                                <Link to={`/posts/${post.id}`}>{post.title}</Link>
+                                            </td>
+                                            <td>
+                                                <Link to={`/profile/${post.author_id}`}>
+                                                    {post.author?.display_name || post.author?.username || '알 수 없음'}
+                                                </Link>
+                                            </td>
+                                            <td>{post.category}</td>
+                                            <td>{new Date(post.created_at).toLocaleDateString()}</td>
+                                            <td>👁️ {post.view_count} / ❤️ {post.like_count}</td>
+                                            <td>
+                                                <button
+                                                    className="btn btn-sm btn-ghost text-red"
+                                                    onClick={() => handleDeletePost(post.id)}
+                                                    title="게시글 삭제"
+                                                >
+                                                    🗑️
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
                     </div>
                 )}
             </div>

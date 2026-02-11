@@ -32,6 +32,7 @@ pub struct PostResponse {
     pub author: UserResponse,
     pub view_count: i64,
     pub like_count: i64,
+    pub user_liked: Option<bool>,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
     pub tags: Vec<String>,

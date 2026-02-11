@@ -218,6 +218,42 @@ pub async fn extract_current_user(
         })
 }
 
+pub async fn extract_optional_user(
+    pool: &SqlitePool,
+    headers: &HeaderMap,
+) -> Result<Option<User>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(auth_header) = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
+        return Ok(None);
+    };
+
+    let Some(token) = auth_header.strip_prefix("Bearer ") else {
+        return Ok(None);
+    };
+
+    let secret = std::env::var("SECRET_KEY").expect("SECRET_KEY must be set in .env");
+    let token_data = match decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &Validation::default(),
+    ) {
+        Ok(data) => data,
+        Err(_) => return Ok(None),
+    };
+
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
+        .bind(&token_data.claims.sub)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
+        })?;
+
+    Ok(user)
+}
+
 // ============================
 // Helper: JWT Generation
 // ============================
@@ -278,6 +314,16 @@ fn generate_state() -> String {
         .collect()
 }
 
+fn extract_cookie_value(cookie_header: &str, key: &str) -> Option<String> {
+    cookie_header
+        .split(';')
+        .find_map(|cookie| {
+            let cookie = cookie.trim();
+            cookie.strip_prefix(&format!("{}=", key))
+        })
+        .map(ToString::to_string)
+}
+
 async fn google_login() -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let client_id = std::env::var("GOOGLE_CLIENT_ID").map_err(|_| {
         (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": "GOOGLE_CLIENT_ID not configured"})))
@@ -310,11 +356,21 @@ async fn google_login() -> Result<impl IntoResponse, (StatusCode, Json<serde_jso
         state,
     );
 
-    // Set code_verifier as a cookie so we can retrieve it in the callback
-    let cookie_value = format!("oauth_verifier={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600", _code_verifier);
+    // Set PKCE verifier/state cookies for callback validation.
+    let verifier_cookie = format!(
+        "oauth_verifier={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600",
+        _code_verifier
+    );
+    let state_cookie = format!(
+        "oauth_state={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600",
+        state
+    );
     
     Ok((
-        [(axum::http::header::SET_COOKIE, cookie_value)],
+        [
+            (axum::http::header::SET_COOKIE, verifier_cookie),
+            (axum::http::header::SET_COOKIE, state_cookie),
+        ],
         Redirect::temporary(&auth_url),
     ))
 }
@@ -322,7 +378,6 @@ async fn google_login() -> Result<impl IntoResponse, (StatusCode, Json<serde_jso
 #[derive(Debug, Deserialize)]
 struct GoogleCallbackParams {
     code: String,
-    #[allow(dead_code)]
     state: Option<String>,
 }
 
@@ -365,15 +420,30 @@ async fn google_callback(
         .get(axum::http::header::COOKIE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    
-    let code_verifier = cookie_header
-        .split(';')
-        .find_map(|c| {
-            let c = c.trim();
-            c.strip_prefix("oauth_verifier=")
-        })
-        .unwrap_or("")
-        .to_string();
+
+    let code_verifier = extract_cookie_value(cookie_header, "oauth_verifier").unwrap_or_default();
+    let cookie_state = extract_cookie_value(cookie_header, "oauth_state").unwrap_or_default();
+
+    let request_state = params.state.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "Missing OAuth state"})),
+        )
+    })?;
+
+    if code_verifier.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "Missing OAuth code verifier"})),
+        ));
+    }
+
+    if cookie_state.is_empty() || request_state != cookie_state {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "Invalid OAuth state"})),
+        ));
+    }
 
     // Exchange authorization code for access token
     let http_client = reqwest::Client::new();
@@ -530,11 +600,17 @@ async fn google_callback(
 
     let redirect_url = format!("{}/?token={}", frontend_url, jwt_token);
 
-    // Clear the oauth_verifier cookie
-    let clear_cookie = "oauth_verifier=; Path=/; HttpOnly; Max-Age=0".to_string();
+    // Clear OAuth cookies after successful login.
+    let clear_verifier_cookie =
+        "oauth_verifier=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".to_string();
+    let clear_state_cookie =
+        "oauth_state=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".to_string();
 
     Ok((
-        [(axum::http::header::SET_COOKIE, clear_cookie)],
+        [
+            (axum::http::header::SET_COOKIE, clear_verifier_cookie),
+            (axum::http::header::SET_COOKIE, clear_state_cookie),
+        ],
         Redirect::temporary(&redirect_url),
     ))
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { postsAPI, commentsAPI } from '../api';
+import { postsAPI, commentsAPI, adminAPI } from '../api';
 import { useAuth } from '../context/AuthContext';
 
 const categoryLabels = {
@@ -44,6 +44,7 @@ function PostDetail() {
                 setLoading(true);
                 const data = await postsAPI.getPost(id);
                 setPost(data);
+                setUserLiked(data.user_liked ?? false);
             } catch (err) {
                 console.error('Failed to fetch post:', err);
                 if (err.response?.status === 404) {
@@ -87,9 +88,17 @@ function PostDetail() {
 
     const handleDelete = async () => {
         if (deleting) return;
+        if (!user) return;
+
         setDeleting(true);
         try {
-            await postsAPI.deletePost(id);
+            if (user.id === post.author_id) {
+                await postsAPI.deletePost(id);
+            } else if (user.is_admin) {
+                await adminAPI.deletePost(id);
+            } else {
+                throw new Error('Not authorized to delete this post');
+            }
             navigate('/');
         } catch (err) {
             console.error('Failed to delete post:', err);
@@ -119,9 +128,17 @@ function PostDetail() {
         }
     };
 
-    const handleDeleteComment = async (commentId) => {
+    const handleDeleteComment = async (commentId, commentAuthorId) => {
+        if (!user) return;
+
         try {
-            await commentsAPI.delete(id, commentId);
+            if (user.id === commentAuthorId) {
+                await commentsAPI.delete(id, commentId);
+            } else if (user.is_admin) {
+                await adminAPI.deleteComment(commentId);
+            } else {
+                throw new Error('Not authorized to delete this comment');
+            }
             setComments(prev => prev.filter(c => c.id !== commentId));
         } catch (err) {
             console.error('Failed to delete comment:', err);
@@ -129,6 +146,7 @@ function PostDetail() {
     };
 
     const isAuthor = user && post && user.id === post.author_id;
+    const canDeletePost = user && post && (user.id === post.author_id || user.is_admin);
     const isPdf = post?.file_name?.toLowerCase().endsWith('.pdf');
 
     const formattedDate = post ? new Date(post.created_at).toLocaleDateString('ko-KR', {
@@ -282,14 +300,16 @@ function PostDetail() {
                                 <span>좋아요 {post.like_count > 0 && post.like_count}</span>
                             </button>
 
-                            {isAuthor && (
+                            {canDeletePost && (
                                 <div className="post-author-actions">
-                                    <Link
-                                        to={`/posts/${post.id}/edit`}
-                                        className="post-action-btn edit-btn"
-                                    >
-                                        ✏️ 수정
-                                    </Link>
+                                    {isAuthor && (
+                                        <Link
+                                            to={`/posts/${post.id}/edit`}
+                                            className="post-action-btn edit-btn"
+                                        >
+                                            ✏️ 수정
+                                        </Link>
+                                    )}
                                     {showDeleteConfirm ? (
                                         <div className="delete-confirm">
                                             <span>정말 삭제하시겠습니까?</span>
@@ -312,7 +332,7 @@ function PostDetail() {
                                             className="post-action-btn delete-btn"
                                             onClick={() => setShowDeleteConfirm(true)}
                                         >
-                                            🗑️ 삭제
+                                            🗑️ {isAuthor ? '삭제' : '관리자 삭제'}
                                         </button>
                                     )}
                                 </div>
@@ -376,7 +396,7 @@ function PostDetail() {
                                             hour: '2-digit',
                                             minute: '2-digit',
                                         });
-                                        const isCommentAuthor = user && user.id === comment.author_id;
+                                        const canDeleteComment = user && (user.id === comment.author_id || user.is_admin);
 
                                         return (
                                             <div key={comment.id} className="comment-item">
@@ -391,10 +411,10 @@ function PostDetail() {
                                                     <div className="comment-header">
                                                         <span className="comment-author">{commentAuthorName}</span>
                                                         <span className="comment-date">{commentDate}</span>
-                                                        {isCommentAuthor && (
+                                                        {canDeleteComment && (
                                                             <button
                                                                 className="comment-delete-btn"
-                                                                onClick={() => handleDeleteComment(comment.id)}
+                                                                onClick={() => handleDeleteComment(comment.id, comment.author_id)}
                                                                 title="삭제"
                                                             >
                                                                 ✕
