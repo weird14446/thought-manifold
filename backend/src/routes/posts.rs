@@ -2,7 +2,7 @@ use axum::{
     extract::{Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{delete, get, post},
+    routing::{get, post},
     Json, Router,
 };
 use sqlx::SqlitePool;
@@ -16,7 +16,7 @@ use crate::routes::auth::extract_current_user;
 pub fn posts_routes() -> Router<SqlitePool> {
     Router::new()
         .route("/", get(list_posts).post(create_post))
-        .route("/{post_id}", get(get_post).delete(delete_post))
+        .route("/{post_id}", get(get_post).put(update_post).delete(delete_post))
         .route("/{post_id}/like", post(like_post))
 }
 
@@ -273,6 +273,149 @@ async fn create_post(
     })))
 }
 
+async fn update_post(
+    State(pool): State<SqlitePool>,
+    headers: HeaderMap,
+    Path(post_id): Path<i64>,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let current_user = extract_current_user(&pool, &headers).await?;
+
+    let post = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE id = ?")
+        .bind(post_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"detail": "Post not found"}))))?;
+
+    if post.author_id != current_user.id {
+        return Err((StatusCode::FORBIDDEN, Json(serde_json::json!({"detail": "Not authorized to edit this post"}))));
+    }
+
+    let mut title = post.title.clone();
+    let mut content = post.content.clone();
+    let mut summary = post.summary.clone();
+    let mut category = post.category.clone();
+    let mut file_path = post.file_path.clone();
+    let mut file_name = post.file_name.clone();
+    let mut remove_file = false;
+
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
+    })? {
+        let name = field.name().unwrap_or_default().to_string();
+
+        match name.as_str() {
+            "title" => {
+                let val = field.text().await.map_err(|e| {
+                    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
+                })?;
+                if !val.is_empty() { title = val; }
+            }
+            "content" => {
+                let val = field.text().await.map_err(|e| {
+                    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
+                })?;
+                if !val.is_empty() { content = val; }
+            }
+            "summary" => {
+                summary = Some(field.text().await.map_err(|e| {
+                    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
+                })?);
+            }
+            "category" => {
+                let val = field.text().await.map_err(|e| {
+                    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
+                })?;
+                if !val.is_empty() { category = val; }
+            }
+            "remove_file" => {
+                let val = field.text().await.map_err(|e| {
+                    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
+                })?;
+                remove_file = val == "true";
+            }
+            "file" => {
+                if let Some(original_name) = field.file_name() {
+                    let original_name = original_name.to_string();
+                    if !original_name.is_empty() {
+                        // Delete old file if exists
+                        if let Some(ref old_path) = post.file_path {
+                            let _ = tokio::fs::remove_file(old_path).await;
+                        }
+
+                        let ext = std::path::Path::new(&original_name)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("bin");
+                        let unique_name = format!("{}.{}", Uuid::new_v4(), ext);
+                        let upload_path = PathBuf::from("uploads").join(&unique_name);
+
+                        let data = field.bytes().await.map_err(|e| {
+                            (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": e.to_string()})))
+                        })?;
+
+                        tokio::fs::write(&upload_path, &data).await.map_err(|e| {
+                            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+                        })?;
+
+                        file_path = Some(upload_path.to_string_lossy().to_string());
+                        file_name = Some(original_name);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Handle file removal
+    if remove_file && file_path.is_some() {
+        if let Some(ref path) = file_path {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        file_path = None;
+        file_name = None;
+    }
+
+    let now = Utc::now();
+    sqlx::query(
+        "UPDATE posts SET title = ?, content = ?, summary = ?, category = ?, file_path = ?, file_name = ?, updated_at = ? WHERE id = ?"
+    )
+    .bind(&title)
+    .bind(&content)
+    .bind(&summary)
+    .bind(&category)
+    .bind(&file_path)
+    .bind(&file_name)
+    .bind(now)
+    .bind(post_id)
+    .execute(&pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
+
+    let updated_post = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE id = ?")
+        .bind(post_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
+
+    Ok(Json(PostResponse {
+        id: updated_post.id,
+        title: updated_post.title,
+        content: updated_post.content,
+        summary: updated_post.summary,
+        category: updated_post.category,
+        file_path: updated_post.file_path,
+        file_name: updated_post.file_name,
+        author_id: updated_post.author_id,
+        author: UserResponse::from(current_user),
+        view_count: updated_post.view_count,
+        like_count: updated_post.like_count,
+        created_at: updated_post.created_at,
+        updated_at: updated_post.updated_at,
+    }))
+}
+
 async fn delete_post(
     State(pool): State<SqlitePool>,
     headers: HeaderMap,
@@ -310,16 +453,53 @@ async fn like_post(
     headers: HeaderMap,
     Path(post_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let _ = extract_current_user(&pool, &headers).await?;
+    let current_user = extract_current_user(&pool, &headers).await?;
 
-    let post = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE id = ?")
+    // Verify post exists
+    let _post = sqlx::query("SELECT id FROM posts WHERE id = ?")
         .bind(post_id)
         .fetch_optional(&pool)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"detail": "Post not found"}))))?;
 
-    let new_count = post.like_count + 1;
+    // Check if user already liked
+    let existing = sqlx::query("SELECT id FROM post_likes WHERE user_id = ? AND post_id = ?")
+        .bind(current_user.id)
+        .bind(post_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
+
+    let user_liked = if existing.is_some() {
+        // Unlike
+        sqlx::query("DELETE FROM post_likes WHERE user_id = ? AND post_id = ?")
+            .bind(current_user.id)
+            .bind(post_id)
+            .execute(&pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
+        false
+    } else {
+        // Like
+        sqlx::query("INSERT INTO post_likes (user_id, post_id, created_at) VALUES (?, ?, ?)")
+            .bind(current_user.id)
+            .bind(post_id)
+            .bind(Utc::now())
+            .execute(&pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
+        true
+    };
+
+    // Count total likes from post_likes table
+    let (new_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM post_likes WHERE post_id = ?")
+        .bind(post_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
+
+    // Sync like_count in posts table
     sqlx::query("UPDATE posts SET like_count = ? WHERE id = ?")
         .bind(new_count)
         .bind(post_id)
@@ -327,5 +507,6 @@ async fn like_post(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()}))))?;
 
-    Ok(Json(serde_json::json!({"message": "Post liked", "like_count": new_count})))
+    Ok(Json(serde_json::json!({"message": if user_liked { "Post liked" } else { "Post unliked" }, "like_count": new_count, "user_liked": user_liked})))
 }
+

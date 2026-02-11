@@ -1,0 +1,31 @@
+use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
+use sqlx::FromRow;
+
+use crate::models::UserResponse;
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Comment {
+    pub id: i64,
+    pub post_id: i64,
+    pub author_id: i64,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CommentResponse {
+    pub id: i64,
+    pub post_id: i64,
+    pub author_id: i64,
+    pub author: UserResponse,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateComment {
+    pub content: String,
+}

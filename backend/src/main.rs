@@ -3,8 +3,8 @@ mod models;
 mod routes;
 
 use axum::{
-    http::{Request, StatusCode},
-    response::{Html, IntoResponse, Response},
+    http::StatusCode,
+    response::{Html, IntoResponse},
     routing::get,
     Router,
 };
@@ -16,7 +16,7 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use routes::{auth_routes, posts_routes, users_routes};
+use routes::{auth_routes, posts_routes, users_routes, comments_routes, admin_routes};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -54,6 +54,8 @@ async fn main() -> anyhow::Result<()> {
         .nest("/api/auth", auth_routes())
         .nest("/api/users", users_routes())
         .nest("/api/posts", posts_routes())
+        .nest("/api/posts", comments_routes())
+        .nest("/api/admin", admin_routes())
         .route("/api/health", get(health_check));
 
     // Build the app

@@ -8,15 +8,17 @@ pub struct User {
     pub username: String,
     pub email: String,
     #[serde(skip_serializing)]
-    pub hashed_password: String,
+    pub hashed_password: Option<String>,
+    pub google_id: Option<String>,
     pub display_name: Option<String>,
     pub bio: Option<String>,
     pub avatar_url: Option<String>,
+    pub is_admin: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserResponse {
     pub id: i64,
     pub username: String,
@@ -24,6 +26,7 @@ pub struct UserResponse {
     pub display_name: Option<String>,
     pub bio: Option<String>,
     pub avatar_url: Option<String>,
+    pub is_admin: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -36,6 +39,7 @@ impl From<User> for UserResponse {
             display_name: user.display_name,
             bio: user.bio,
             avatar_url: user.avatar_url,
+            is_admin: user.is_admin,
             created_at: user.created_at,
         }
     }
