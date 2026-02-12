@@ -16,6 +16,15 @@ const reviewDecisionLabels = {
     reject: 'Reject',
 };
 
+const paperStatusLabels = {
+    draft: 'Draft',
+    submitted: 'Submitted',
+    revision: 'Revision',
+    accepted: 'Accepted',
+    published: 'Published',
+    rejected: 'Rejected',
+};
+
 function ReviewCenter() {
     const navigate = useNavigate();
     const { user, loading: authLoading } = useAuth();
@@ -127,7 +136,7 @@ function ReviewCenter() {
                                                 <Link to={detailLink}>{item.title}</Link>
                                             </h2>
                                             <p className="review-center-meta">
-                                                ID {item.post_id} · {item.category}
+                                                ID {item.post_id} · {item.category} · 상태 {paperStatusLabels[item.paper_status] || item.paper_status}
                                             </p>
                                         </div>
                                         <span className={`review-publish-badge ${isPublished ? 'published' : 'unpublished'}`}>

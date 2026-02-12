@@ -224,8 +224,7 @@ async fn ensure_post_visibility(
     pool: &MySqlPool,
     post_id: i64,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    let post_row =
-        sqlx::query_as::<_, (bool,)>("SELECT is_published FROM posts WHERE id = ?")
+    let post_row = sqlx::query_as::<_, (bool,)>("SELECT is_published FROM posts WHERE id = ?")
         .bind(post_id)
         .fetch_optional(pool)
         .await

@@ -4,6 +4,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+pub const PAPER_STATUS_DRAFT: &str = "draft";
+pub const PAPER_STATUS_SUBMITTED: &str = "submitted";
+pub const PAPER_STATUS_REVISION: &str = "revision";
+pub const PAPER_STATUS_ACCEPTED: &str = "accepted";
+pub const PAPER_STATUS_PUBLISHED: &str = "published";
+pub const PAPER_STATUS_REJECTED: &str = "rejected";
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Post {
     pub id: i64,
@@ -16,6 +23,7 @@ pub struct Post {
     pub author_id: i64,
     pub is_published: bool,
     pub published_at: Option<DateTime<Utc>>,
+    pub paper_status: String,
     pub view_count: i64,
     pub like_count: i64,
     pub created_at: DateTime<Utc>,
@@ -35,6 +43,7 @@ pub struct PostResponse {
     pub author: UserResponse,
     pub is_published: bool,
     pub published_at: Option<DateTime<Utc>>,
+    pub paper_status: String,
     pub view_count: i64,
     pub like_count: i64,
     pub user_liked: Option<bool>,

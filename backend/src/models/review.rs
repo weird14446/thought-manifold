@@ -87,6 +87,7 @@ pub struct MyPaperReviewItem {
     pub post_id: i64,
     pub title: String,
     pub category: String,
+    pub paper_status: String,
     pub is_published: bool,
     pub published_at: Option<DateTime<Utc>>,
     pub latest_review: Option<AiReviewSummary>,

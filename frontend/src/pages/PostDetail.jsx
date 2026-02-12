@@ -32,6 +32,15 @@ const reviewDecisionLabels = {
     reject: 'Reject',
 };
 
+const paperStatusLabels = {
+    draft: 'Draft',
+    submitted: 'Submitted',
+    revision: 'Revision',
+    accepted: 'Accepted',
+    published: 'Published',
+    rejected: 'Rejected',
+};
+
 const POST_DETAIL_CACHE_TTL_MS = 2000;
 const postDetailRequestCache = new Map();
 
@@ -93,6 +102,7 @@ function PostDetail() {
     const [reviewLoading, setReviewLoading] = useState(false);
     const [reviewError, setReviewError] = useState(null);
     const [reviewRerunning, setReviewRerunning] = useState(false);
+    const [publishing, setPublishing] = useState(false);
 
     // Comments state
     const [comments, setComments] = useState([]);
@@ -313,6 +323,22 @@ function PostDetail() {
         }
     };
 
+    const handlePublishPaper = async () => {
+        if (!post || publishing) return;
+        setPublishing(true);
+        try {
+            await postsAPI.publishPost(post.id);
+            postDetailRequestCache.clear();
+            const params = reviewCenterSource ? { source: reviewCenterSource } : {};
+            const refreshed = await postsAPI.getPost(post.id, params);
+            setPost(refreshed);
+        } catch (err) {
+            setReviewError(err.response?.data?.detail || '논문 게재 처리에 실패했습니다.');
+        } finally {
+            setPublishing(false);
+        }
+    };
+
     const formattedDate = post ? new Date(post.created_at).toLocaleDateString('ko-KR', {
         year: 'numeric',
         month: 'long',
@@ -398,6 +424,9 @@ function PostDetail() {
                                     {post.metrics?.citation_count !== undefined && (
                                         <span className="post-detail-stat">📚 {post.metrics.citation_count}</span>
                                     )}
+                                    {post.category === 'paper' && (
+                                        <span className="post-detail-stat">🧭 {paperStatusLabels[post.paper_status] || post.paper_status}</span>
+                                    )}
                                 </div>
                             </div>
                         </header>
@@ -421,6 +450,16 @@ function PostDetail() {
                                         >
                                             {reviewRerunning ? '재심사 요청 중...' : '재심사 실행'}
                                         </button>
+                                        {post.paper_status === 'accepted' && !post.is_published && (
+                                            <button
+                                                type="button"
+                                                className="btn btn-primary btn-sm"
+                                                onClick={handlePublishPaper}
+                                                disabled={publishing}
+                                            >
+                                                {publishing ? '게재 처리 중...' : '게재하기'}
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
 
@@ -510,7 +549,7 @@ function PostDetail() {
 
                         {!post.is_published && canViewAiReview && (
                             <div className="post-unpublished-notice">
-                                현재 이 논문은 공개 전 상태입니다. <Link to="/reviews">AI 심사 센터</Link>에서 진행 상태를 확인하세요.
+                                현재 이 논문은 공개 전 상태({paperStatusLabels[post.paper_status] || post.paper_status})입니다. <Link to="/reviews">AI 심사 센터</Link>에서 진행 상태를 확인하세요.
                             </div>
                         )}
 

@@ -18,7 +18,8 @@ use zip::ZipArchive;
 use crate::models::{
     AiReviewDecision, AiReviewEditorial, AiReviewListResponse, AiReviewMetricsSummary,
     AiReviewPeer, AiReviewResponse, AiReviewScores, AiReviewStatus, AiReviewSummary,
-    MyPaperReviewItem, MyPaperReviewListResponse,
+    MyPaperReviewItem, MyPaperReviewListResponse, PAPER_STATUS_ACCEPTED, PAPER_STATUS_REJECTED,
+    PAPER_STATUS_REVISION,
 };
 
 pub const AI_REVIEW_PROMPT_VERSION: &str = "v1";
@@ -139,6 +140,7 @@ struct ReviewCenterRow {
     post_id: i64,
     title: String,
     category: String,
+    paper_status: String,
     is_published: bool,
     published_at: Option<chrono::DateTime<chrono::Utc>>,
     review_id: Option<i64>,
@@ -425,6 +427,7 @@ pub async fn fetch_user_review_center(
             p.id AS post_id,
             p.title AS title,
             c.code AS category,
+            p.paper_status AS paper_status,
             p.is_published AS is_published,
             p.published_at AS published_at,
             lr.id AS review_id,
@@ -486,6 +489,7 @@ pub async fn fetch_user_review_center(
                 post_id: row.post_id,
                 title: row.title,
                 category: row.category,
+                paper_status: row.paper_status,
                 is_published: row.is_published,
                 published_at: row.published_at,
                 latest_review,
@@ -841,11 +845,7 @@ async fn invoke_gemini_review(
 
     for attempt in 1..=total_attempts {
         let can_retry = attempt < total_attempts;
-        let response = client
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .await;
+        let response = client.post(&url).json(&request_body).send().await;
         let response = match response {
             Ok(resp) => resp,
             Err(error) => {
@@ -1095,34 +1095,31 @@ async fn mark_completed(
     .execute(pool)
     .await?;
 
-    if decision_id == AI_REVIEW_DECISION_ACCEPT_ID {
-        sqlx::query(
-            r#"
-            UPDATE posts
-            SET
-                is_published = TRUE,
-                published_at = ?
-            WHERE id = (SELECT post_id FROM post_ai_reviews WHERE id = ?)
-            "#,
-        )
-        .bind(now)
-        .bind(review_id)
-        .execute(pool)
-        .await?;
-    } else {
-        sqlx::query(
-            r#"
-            UPDATE posts
-            SET
-                is_published = FALSE,
-                published_at = NULL
-            WHERE id = (SELECT post_id FROM post_ai_reviews WHERE id = ?)
-            "#,
-        )
-        .bind(review_id)
-        .execute(pool)
-        .await?;
-    }
+    let next_paper_status = match decision_id {
+        AI_REVIEW_DECISION_ACCEPT_ID => PAPER_STATUS_ACCEPTED,
+        AI_REVIEW_DECISION_MINOR_REVISION_ID | AI_REVIEW_DECISION_MAJOR_REVISION_ID => {
+            PAPER_STATUS_REVISION
+        }
+        AI_REVIEW_DECISION_REJECT_ID => PAPER_STATUS_REJECTED,
+        _ => PAPER_STATUS_REVISION,
+    };
+
+    sqlx::query(
+        r#"
+        UPDATE posts
+        SET
+            paper_status = ?,
+            is_published = FALSE,
+            published_at = NULL,
+            updated_at = ?
+        WHERE id = (SELECT post_id FROM post_ai_reviews WHERE id = ?)
+        "#,
+    )
+    .bind(next_paper_status)
+    .bind(now)
+    .bind(review_id)
+    .execute(pool)
+    .await?;
 
     Ok(())
 }

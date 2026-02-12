@@ -288,6 +288,7 @@ function Admin() {
                                         <th>제목</th>
                                         <th>작성자</th>
                                         <th>카테고리</th>
+                                        <th>논문 상태</th>
                                         <th>작성일</th>
                                         <th>지표</th>
                                         <th>관리</th>
@@ -306,6 +307,7 @@ function Admin() {
                                                 </Link>
                                             </td>
                                             <td>{post.category}</td>
+                                            <td>{post.category === 'paper' ? (post.paper_status || '-') : '-'}</td>
                                             <td>{new Date(post.created_at).toLocaleDateString()}</td>
                                             <td>👁️ {post.view_count} / ❤️ {post.like_count}</td>
                                             <td>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useLocation } from 'react-router-dom';
 import { postsAPI } from '../api';
 import { useAuth } from '../context/AuthContext';
 
@@ -12,6 +12,7 @@ const categories = [
 
 function EditPost() {
     const { id } = useParams();
+    const location = useLocation();
     const navigate = useNavigate();
     const { user } = useAuth();
     const fileInputRef = useRef(null);
@@ -23,6 +24,7 @@ function EditPost() {
     const [category, setCategory] = useState('essay');
     const [tags, setTags] = useState('');
     const [citations, setCitations] = useState('');
+    const [paperWorkflow, setPaperWorkflow] = useState('submitted');
     const [citationsTouched, setCitationsTouched] = useState(false);
     const [file, setFile] = useState(null);
     const [existingFile, setExistingFile] = useState(null);
@@ -34,7 +36,17 @@ function EditPost() {
     useEffect(() => {
         const fetchPost = async () => {
             try {
-                const data = await postsAPI.getPost(id);
+                const sourceFromUrl = new URLSearchParams(location.search).get('source');
+                let data;
+                try {
+                    data = await postsAPI.getPost(id, sourceFromUrl === 'review_center' ? { source: 'review_center' } : {});
+                } catch (firstErr) {
+                    if (firstErr.response?.status === 404) {
+                        data = await postsAPI.getPost(id, { source: 'review_center' });
+                    } else {
+                        throw firstErr;
+                    }
+                }
                 // Check authorization
                 if (user && data.author_id !== user.id) {
                     navigate(`/posts/${id}`);
@@ -44,6 +56,7 @@ function EditPost() {
                 setContent(data.content);
                 setSummary(data.summary || '');
                 setCategory(data.category);
+                setPaperWorkflow(data.paper_status === 'draft' ? 'draft' : 'submitted');
                 if (data.tags) {
                     setTags(data.tags.join(', '));
                 }
@@ -69,7 +82,7 @@ function EditPost() {
         } else {
             navigate('/login');
         }
-    }, [id, user, navigate]);
+    }, [id, user, navigate, location.search]);
 
     const handleFileChange = (e) => {
         const selectedFile = e.target.files?.[0];
@@ -147,6 +160,7 @@ function EditPost() {
                 content: content.trim(),
                 summary: summary.trim() || '',
                 category,
+                paper_status: category === 'paper' ? paperWorkflow : undefined,
                 tags: tags.trim() || undefined,
                 citations: citationsPayload,
                 file: file || undefined,
@@ -265,6 +279,24 @@ function EditPost() {
                             onChange={(e) => setTags(e.target.value)}
                         />
                     </div>
+
+                    {category === 'paper' && (
+                        <div className="form-group">
+                            <label className="form-label" htmlFor="paper-workflow">
+                                논문 상태
+                            </label>
+                            <select
+                                id="paper-workflow"
+                                className="form-input"
+                                value={paperWorkflow}
+                                onChange={(e) => setPaperWorkflow(e.target.value)}
+                            >
+                                <option value="submitted">수정 후 심사 제출 (submitted)</option>
+                                <option value="draft">초안으로 저장 (draft)</option>
+                            </select>
+                            <span className="form-hint">초안으로 저장하면 자동 심사가 실행되지 않습니다.</span>
+                        </div>
+                    )}
 
                     {category === 'paper' && (
                         <div className="form-group">
@@ -393,7 +425,11 @@ function EditPost() {
                                     저장 중...
                                 </>
                             ) : (
-                                '💾 수정 완료'
+                                category === 'paper' && paperWorkflow === 'draft'
+                                    ? '💾 초안 저장'
+                                    : category === 'paper'
+                                        ? '📤 수정 후 심사 제출'
+                                        : '💾 수정 완료'
                             )}
                         </button>
                     </div>

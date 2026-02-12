@@ -12,6 +12,7 @@ use crate::ai_review::{
     ReviewTrigger, fetch_latest_review, fetch_post_reviews, fetch_user_review_center,
     schedule_review,
 };
+use crate::models::PAPER_STATUS_SUBMITTED;
 use crate::routes::auth::extract_current_user;
 
 pub fn reviews_routes() -> Router<MySqlPool> {
@@ -88,6 +89,25 @@ async fn rerun_post_review(
             })),
         ));
     }
+
+    let now = chrono::Utc::now();
+    sqlx::query(
+        r#"
+        UPDATE posts
+        SET
+            paper_status = ?,
+            is_published = FALSE,
+            published_at = NULL,
+            updated_at = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(PAPER_STATUS_SUBMITTED)
+    .bind(now)
+    .bind(post_id)
+    .execute(&pool)
+    .await
+    .map_err(internal_error)?;
 
     let review_id = schedule_review(&pool, post_id, ReviewTrigger::Manual)
         .await

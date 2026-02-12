@@ -59,6 +59,7 @@ export const postsAPI = {
         formData.append('content', postData.content);
         if (postData.summary) formData.append('summary', postData.summary);
         formData.append('category', postData.category || 'other');
+        if (postData.paper_status) formData.append('paper_status', postData.paper_status);
         if (postData.tags?.trim()) formData.append('tags', postData.tags.trim());
         if (postData.citations?.trim()) formData.append('citations', postData.citations.trim());
         if (postData.file) formData.append('file', postData.file);
@@ -82,6 +83,7 @@ export const postsAPI = {
         formData.append('content', postData.content);
         if (postData.summary !== undefined) formData.append('summary', postData.summary || '');
         formData.append('category', postData.category || 'other');
+        if (postData.paper_status) formData.append('paper_status', postData.paper_status);
         if (postData.tags?.trim()) formData.append('tags', postData.tags.trim());
         if (postData.citations !== undefined) {
             formData.append('citations', (postData.citations || '').trim());
@@ -92,6 +94,10 @@ export const postsAPI = {
         const response = await api.put(`/posts/${id}`, formData, {
             headers: { 'Content-Type': 'multipart/form-data' },
         });
+        return response.data;
+    },
+    publishPost: async (id) => {
+        const response = await api.post(`/posts/${id}/publish`);
         return response.data;
     },
 };

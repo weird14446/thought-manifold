@@ -19,6 +19,7 @@ function Upload() {
     const [category, setCategory] = useState('essay');
     const [tags, setTags] = useState('');
     const [citations, setCitations] = useState('');
+    const [paperWorkflow, setPaperWorkflow] = useState('submitted');
     const [file, setFile] = useState(null);
     const [dragActive, setDragActive] = useState(false);
     const [submitting, setSubmitting] = useState(false);
@@ -84,6 +85,7 @@ function Upload() {
                 content: content.trim(),
                 summary: summary.trim() || undefined,
                 category,
+                paper_status: category === 'paper' ? paperWorkflow : undefined,
                 tags: tags.trim() || undefined,
                 citations: category === 'paper' ? (citations.trim() || undefined) : undefined,
                 file: file || undefined,
@@ -188,6 +190,24 @@ function Upload() {
 
                     {category === 'paper' && (
                         <div className="form-group">
+                            <label className="form-label" htmlFor="paper-workflow">
+                                논문 상태
+                            </label>
+                            <select
+                                id="paper-workflow"
+                                className="form-input"
+                                value={paperWorkflow}
+                                onChange={(e) => setPaperWorkflow(e.target.value)}
+                            >
+                                <option value="submitted">심사 제출 (submitted)</option>
+                                <option value="draft">초안 저장 (draft)</option>
+                            </select>
+                            <span className="form-hint">초안은 심사센터에서만 보이며 자동 심사가 실행되지 않습니다.</span>
+                        </div>
+                    )}
+
+                    {category === 'paper' && (
+                        <div className="form-group">
                             <label className="form-label" htmlFor="citations">
                                 인용 문헌 ID <span className="optional">(선택)</span>
                             </label>
@@ -286,10 +306,14 @@ function Upload() {
                             {submitting ? (
                                 <>
                                     <span className="spinner" />
-                                    업로드 중...
+                                    처리 중...
                                 </>
                             ) : (
-                                '📤 글 발행하기'
+                                category === 'paper' && paperWorkflow === 'draft'
+                                    ? '📝 논문 초안 저장'
+                                    : category === 'paper'
+                                        ? '📤 논문 심사 제출'
+                                        : '📤 글 발행하기'
                             )}
                         </button>
                     </div>

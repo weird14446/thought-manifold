@@ -5,7 +5,24 @@ USE thought_manifold;
 
 ALTER TABLE posts
   ADD COLUMN IF NOT EXISTS is_published BOOLEAN NOT NULL DEFAULT TRUE,
-  ADD COLUMN IF NOT EXISTS published_at DATETIME(6) NULL;
+  ADD COLUMN IF NOT EXISTS published_at DATETIME(6) NULL,
+  ADD COLUMN IF NOT EXISTS paper_status VARCHAR(32) NOT NULL DEFAULT 'published';
+
+SET @has_paper_status_check := (
+  SELECT COUNT(*)
+  FROM information_schema.table_constraints
+  WHERE table_schema = DATABASE()
+    AND table_name = 'posts'
+    AND constraint_name = 'chk_posts_paper_status'
+);
+SET @add_check_sql := IF(
+  @has_paper_status_check = 0,
+  "ALTER TABLE posts ADD CONSTRAINT chk_posts_paper_status CHECK (paper_status IN ('draft', 'submitted', 'revision', 'accepted', 'published', 'rejected'))",
+  "SELECT 1"
+);
+PREPARE stmt_add_check FROM @add_check_sql;
+EXECUTE stmt_add_check;
+DEALLOCATE PREPARE stmt_add_check;
 
 CREATE TABLE IF NOT EXISTS ai_review_statuses (
   id TINYINT UNSIGNED PRIMARY KEY,
@@ -78,3 +95,77 @@ INSERT IGNORE INTO ai_review_decisions (id, code, display_name) VALUES
   (2, 'minor_revision', 'Minor Revision'),
   (3, 'major_revision', 'Major Revision'),
   (4, 'reject', 'Reject');
+
+-- Backfill paper status machine
+UPDATE posts p
+JOIN post_categories c ON c.id = p.category_id
+LEFT JOIN (
+  SELECT r.post_id, d.code AS decision
+  FROM post_ai_reviews r
+  JOIN ai_review_decisions d ON d.id = r.decision_id
+  JOIN (
+    SELECT post_id, MAX(id) AS max_id
+    FROM post_ai_reviews
+    WHERE status_id = 2
+    GROUP BY post_id
+  ) latest ON latest.post_id = r.post_id AND latest.max_id = r.id
+  WHERE r.status_id = 2
+) latest_review ON latest_review.post_id = p.id
+SET p.paper_status = CASE
+  WHEN latest_review.decision = 'accept' AND p.is_published = TRUE THEN 'published'
+  WHEN latest_review.decision = 'accept' THEN 'accepted'
+  WHEN latest_review.decision IN ('minor_revision', 'major_revision') THEN 'revision'
+  WHEN latest_review.decision = 'reject' THEN 'rejected'
+  ELSE p.paper_status
+END
+WHERE c.code = 'paper' AND latest_review.decision IS NOT NULL;
+
+UPDATE posts p
+JOIN post_categories c ON c.id = p.category_id
+LEFT JOIN (
+  SELECT r.post_id, s.code AS status_code
+  FROM post_ai_reviews r
+  JOIN ai_review_statuses s ON s.id = r.status_id
+  JOIN (
+    SELECT post_id, MAX(id) AS max_id
+    FROM post_ai_reviews
+    GROUP BY post_id
+  ) latest ON latest.post_id = r.post_id AND latest.max_id = r.id
+) latest_any ON latest_any.post_id = p.id
+LEFT JOIN (
+  SELECT post_id, MAX(id) AS latest_completed_id
+  FROM post_ai_reviews
+  WHERE status_id = 2
+  GROUP BY post_id
+) latest_completed ON latest_completed.post_id = p.id
+SET p.paper_status = 'submitted'
+WHERE c.code = 'paper'
+  AND latest_completed.latest_completed_id IS NULL
+  AND latest_any.status_code IN ('pending', 'failed');
+
+UPDATE posts p
+JOIN post_categories c ON c.id = p.category_id
+SET p.paper_status = 'draft'
+WHERE c.code = 'paper'
+  AND (
+    p.paper_status NOT IN ('draft', 'submitted', 'revision', 'accepted', 'published', 'rejected')
+    OR (p.paper_status = 'published' AND p.is_published = FALSE)
+  );
+
+UPDATE posts p
+JOIN post_categories c ON c.id = p.category_id
+SET
+  p.is_published = CASE WHEN p.paper_status = 'published' THEN TRUE ELSE FALSE END,
+  p.published_at = CASE
+    WHEN p.paper_status = 'published' THEN COALESCE(p.published_at, p.created_at)
+    ELSE NULL
+  END
+WHERE c.code = 'paper';
+
+UPDATE posts p
+JOIN post_categories c ON c.id = p.category_id
+SET
+  p.paper_status = 'published',
+  p.is_published = TRUE,
+  p.published_at = COALESCE(p.published_at, p.created_at)
+WHERE c.code <> 'paper';

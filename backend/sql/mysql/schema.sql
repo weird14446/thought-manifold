@@ -42,11 +42,14 @@ CREATE TABLE IF NOT EXISTS posts (
   author_id BIGINT NOT NULL,
   is_published BOOLEAN NOT NULL DEFAULT TRUE,
   published_at DATETIME(6) NULL,
+  paper_status VARCHAR(32) NOT NULL DEFAULT 'published',
   created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   updated_at DATETIME(6) NULL,
   INDEX idx_posts_author_id (author_id),
   INDEX idx_posts_published_created_at (is_published, created_at),
   INDEX idx_posts_category_created_at (category_id, created_at),
+  INDEX idx_posts_paper_status_created_at (paper_status, created_at),
+  CONSTRAINT chk_posts_paper_status CHECK (paper_status IN ('draft', 'submitted', 'revision', 'accepted', 'published', 'rejected')),
   CONSTRAINT fk_posts_category_id FOREIGN KEY (category_id) REFERENCES post_categories(id),
   CONSTRAINT fk_posts_author_id FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

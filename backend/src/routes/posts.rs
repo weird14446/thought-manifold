@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::ai_review::{ReviewTrigger, schedule_review};
 use crate::metrics::{METRIC_VERSION, compute_citation_count, compute_citation_counts_for_posts};
 use crate::models::{
+    PAPER_STATUS_ACCEPTED, PAPER_STATUS_DRAFT, PAPER_STATUS_PUBLISHED, PAPER_STATUS_SUBMITTED,
     Post, PostListResponse, PostMetrics, PostQuery, PostResponse, User, UserResponse,
 };
 use crate::routes::auth::{extract_current_user, extract_optional_user};
@@ -44,6 +45,7 @@ const POST_SELECT_COLUMNS: &str = r#"
         p.author_id,
         p.is_published,
         p.published_at,
+        p.paper_status,
         COALESCE(ps.view_count, 0) AS view_count,
         COALESCE(ps.like_count, 0) AS like_count,
         p.created_at,
@@ -60,6 +62,7 @@ pub fn posts_routes() -> Router<MySqlPool> {
             "/{post_id}",
             get(get_post).put(update_post).delete(delete_post),
         )
+        .route("/{post_id}/publish", post(publish_post))
         .route("/{post_id}/like", post(like_post))
         // Keep multipart parsing above the 10MB policy threshold so route-level validation can return a precise 413.
         .layer(DefaultBodyLimit::max(MULTIPART_BODY_LIMIT_BYTES))
@@ -138,6 +141,7 @@ async fn list_posts(
             author,
             is_published: post.is_published,
             published_at: post.published_at,
+            paper_status: post.paper_status,
             view_count: post.view_count,
             like_count: post.like_count,
             user_liked: None,
@@ -241,6 +245,7 @@ async fn get_post(
         author: UserResponse::from(author),
         is_published: post.is_published,
         published_at: post.published_at,
+        paper_status: post.paper_status,
         view_count: post.view_count + 1,
         like_count: post.like_count,
         user_liked,
@@ -269,6 +274,7 @@ async fn create_post(
     let mut file_name: Option<String> = None;
     let mut tags_str = String::new();
     let mut citations_str: Option<String> = None;
+    let mut requested_paper_status: Option<String> = None;
 
     while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
         let name = field.name().unwrap_or_default().to_string();
@@ -291,6 +297,9 @@ async fn create_post(
             }
             "citations" => {
                 citations_str = Some(field.text().await.map_err(multipart_error)?);
+            }
+            "paper_status" => {
+                requested_paper_status = Some(field.text().await.map_err(multipart_error)?);
             }
             "file" => {
                 if let Some(original_name) = field.file_name() {
@@ -336,11 +345,13 @@ async fn create_post(
         prepare_auto_citations_for_content(&pool, &category_code, &content, None).await?;
 
     let now = Utc::now();
-    let is_published = category_code != PAPER_CATEGORY;
+    let paper_status =
+        resolve_create_paper_status(&category_code, requested_paper_status.as_deref())?;
+    let is_published = paper_status == PAPER_STATUS_PUBLISHED;
     let published_at = if is_published { Some(now) } else { None };
     let result = sqlx::query(
-        r#"INSERT INTO posts (title, content, summary, category_id, author_id, is_published, published_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
+        r#"INSERT INTO posts (title, content, summary, category_id, author_id, is_published, published_at, paper_status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&title)
     .bind(&content)
@@ -349,6 +360,7 @@ async fn create_post(
     .bind(current_user.id)
     .bind(is_published)
     .bind(published_at)
+    .bind(&paper_status)
     .bind(now)
     .execute(&pool)
     .await
@@ -382,7 +394,7 @@ async fn create_post(
     replace_post_citations(&pool, post_id, &manual_citation_ids).await?;
     replace_post_auto_citations(&pool, post_id, &auto_citation_ids).await?;
 
-    if category_code == PAPER_CATEGORY {
+    if category_code == PAPER_CATEGORY && paper_status == PAPER_STATUS_SUBMITTED {
         if let Err(error) = schedule_review(&pool, post_id, ReviewTrigger::AutoCreate).await {
             tracing::error!(
                 "Failed to schedule auto AI review on create for post {}: {}",
@@ -426,6 +438,7 @@ async fn create_post(
             author: UserResponse::from(current_user),
             is_published: post.is_published,
             published_at: post.published_at,
+            paper_status: post.paper_status,
             view_count: post.view_count,
             like_count: post.like_count,
             user_liked: Some(false),
@@ -481,6 +494,7 @@ async fn update_post(
     let mut file_changed = false;
     let mut tags_str: Option<String> = None;
     let mut citations_str: Option<String> = None;
+    let mut requested_paper_status: Option<String> = None;
     let mut replacement_file: Option<(String, Vec<u8>)> = None;
 
     while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
@@ -513,6 +527,9 @@ async fn update_post(
             }
             "citations" => {
                 citations_str = Some(field.text().await.map_err(multipart_error)?);
+            }
+            "paper_status" => {
+                requested_paper_status = Some(field.text().await.map_err(multipart_error)?);
             }
             "remove_file" => {
                 let val = field.text().await.map_err(multipart_error)?;
@@ -570,10 +587,15 @@ async fn update_post(
     };
 
     let now = Utc::now();
-    let is_published = category_code != PAPER_CATEGORY;
+    let paper_status = resolve_update_paper_status(
+        &category_code,
+        post.paper_status.as_str(),
+        requested_paper_status.as_deref(),
+    )?;
+    let is_published = paper_status == PAPER_STATUS_PUBLISHED;
     let published_at = if is_published { Some(now) } else { None };
     sqlx::query(
-        "UPDATE posts SET title = ?, content = ?, summary = ?, category_id = ?, is_published = ?, published_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE posts SET title = ?, content = ?, summary = ?, category_id = ?, is_published = ?, published_at = ?, paper_status = ?, updated_at = ? WHERE id = ?",
     )
     .bind(&title)
     .bind(&content)
@@ -581,6 +603,7 @@ async fn update_post(
     .bind(category_id)
     .bind(is_published)
     .bind(published_at)
+    .bind(&paper_status)
     .bind(now)
     .bind(post_id)
     .execute(&pool)
@@ -639,12 +662,14 @@ async fn update_post(
                 .await?;
         replace_post_auto_citations(&pool, post_id, &auto_citation_ids).await?;
 
-        if let Err(error) = schedule_review(&pool, post_id, ReviewTrigger::AutoUpdate).await {
-            tracing::error!(
-                "Failed to schedule auto AI review on update for post {}: {}",
-                post_id,
-                error
-            );
+        if paper_status == PAPER_STATUS_SUBMITTED {
+            if let Err(error) = schedule_review(&pool, post_id, ReviewTrigger::AutoUpdate).await {
+                tracing::error!(
+                    "Failed to schedule auto AI review on update for post {}: {}",
+                    post_id,
+                    error
+                );
+            }
         }
     }
 
@@ -673,6 +698,7 @@ async fn update_post(
         author: UserResponse::from(current_user),
         is_published: updated_post.is_published,
         published_at: updated_post.published_at,
+        paper_status: updated_post.paper_status,
         view_count: updated_post.view_count,
         like_count: updated_post.like_count,
         user_liked: Some(user_liked),
@@ -733,6 +759,93 @@ async fn delete_post(
     ))
 }
 
+async fn publish_post(
+    State(pool): State<MySqlPool>,
+    headers: HeaderMap,
+    Path(post_id): Path<i64>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let current_user = extract_current_user(&pool, &headers).await?;
+
+    let row = sqlx::query_as::<_, (i64, String, String)>(
+        r#"
+        SELECT p.author_id, c.code AS category_code, p.paper_status
+        FROM posts p
+        JOIN post_categories c ON c.id = p.category_id
+        WHERE p.id = ?
+        "#,
+    )
+    .bind(post_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(internal_error)?
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"detail": "Post not found"})),
+        )
+    })?;
+
+    let (author_id, category_code, paper_status) = row;
+    if current_user.id != author_id && !current_user.is_admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"detail": "Not authorized to publish this post"})),
+        ));
+    }
+
+    if category_code != PAPER_CATEGORY {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "Only paper posts can use publish transition"})),
+        ));
+    }
+
+    if paper_status == PAPER_STATUS_PUBLISHED {
+        return Ok(Json(serde_json::json!({
+            "detail": "Post is already published",
+            "paper_status": PAPER_STATUS_PUBLISHED,
+            "is_published": true
+        })));
+    }
+
+    if paper_status != PAPER_STATUS_ACCEPTED {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "detail": "Only accepted papers can be published",
+                "paper_status": paper_status
+            })),
+        ));
+    }
+
+    let now = Utc::now();
+    sqlx::query(
+        r#"
+        UPDATE posts
+        SET
+            paper_status = ?,
+            is_published = TRUE,
+            published_at = COALESCE(published_at, ?),
+            updated_at = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(PAPER_STATUS_PUBLISHED)
+    .bind(now)
+    .bind(now)
+    .bind(post_id)
+    .execute(&pool)
+    .await
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::json!({
+        "detail": "Paper published successfully",
+        "paper_status": PAPER_STATUS_PUBLISHED,
+        "is_published": true,
+        "published_at": now
+    })))
+}
+
 async fn like_post(
     State(pool): State<MySqlPool>,
     headers: HeaderMap,
@@ -740,8 +853,7 @@ async fn like_post(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let current_user = extract_current_user(&pool, &headers).await?;
 
-    let post_row =
-        sqlx::query_as::<_, (bool,)>("SELECT is_published FROM posts WHERE id = ?")
+    let post_row = sqlx::query_as::<_, (bool,)>("SELECT is_published FROM posts WHERE id = ?")
         .bind(post_id)
         .fetch_optional(&pool)
         .await
@@ -844,10 +956,7 @@ fn push_post_filters(
     }
 }
 
-fn push_visibility_filter(
-    query_builder: &mut QueryBuilder<MySql>,
-    has_where: &mut bool,
-) {
+fn push_visibility_filter(query_builder: &mut QueryBuilder<MySql>, has_where: &mut bool) {
     push_condition(query_builder, has_where);
     query_builder.push("p.is_published = TRUE");
 }
@@ -863,6 +972,85 @@ fn push_condition(query_builder: &mut QueryBuilder<MySql>, has_where: &mut bool)
     } else {
         query_builder.push(" WHERE ");
         *has_where = true;
+    }
+}
+
+fn normalize_paper_status(raw: &str) -> String {
+    raw.trim().to_ascii_lowercase()
+}
+
+fn resolve_create_paper_status(
+    category_code: &str,
+    requested_status: Option<&str>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let requested = requested_status
+        .map(normalize_paper_status)
+        .filter(|value| !value.is_empty());
+
+    if category_code != PAPER_CATEGORY {
+        if let Some(value) = requested {
+            if value != PAPER_STATUS_PUBLISHED {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "detail": "paper_status can only be set to 'published' for non-paper posts"
+                    })),
+                ));
+            }
+        }
+        return Ok(PAPER_STATUS_PUBLISHED.to_string());
+    }
+
+    match requested.as_deref() {
+        None | Some(PAPER_STATUS_SUBMITTED) => Ok(PAPER_STATUS_SUBMITTED.to_string()),
+        Some(PAPER_STATUS_DRAFT) => Ok(PAPER_STATUS_DRAFT.to_string()),
+        Some(other) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "detail": format!(
+                    "Invalid paper_status '{}' for paper create. Allowed: draft, submitted",
+                    other
+                )
+            })),
+        )),
+    }
+}
+
+fn resolve_update_paper_status(
+    category_code: &str,
+    _current_status: &str,
+    requested_status: Option<&str>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let requested = requested_status
+        .map(normalize_paper_status)
+        .filter(|value| !value.is_empty());
+
+    if category_code != PAPER_CATEGORY {
+        if let Some(value) = requested {
+            if value != PAPER_STATUS_PUBLISHED {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "detail": "paper_status can only be set to 'published' for non-paper posts"
+                    })),
+                ));
+            }
+        }
+        return Ok(PAPER_STATUS_PUBLISHED.to_string());
+    }
+
+    match requested.as_deref() {
+        None | Some(PAPER_STATUS_SUBMITTED) => Ok(PAPER_STATUS_SUBMITTED.to_string()),
+        Some(PAPER_STATUS_DRAFT) => Ok(PAPER_STATUS_DRAFT.to_string()),
+        Some(other) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "detail": format!(
+                    "Invalid paper_status '{}' for paper update. Allowed: draft, submitted",
+                    other
+                )
+            })),
+        )),
     }
 }
 

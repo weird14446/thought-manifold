@@ -102,3 +102,8 @@ coverage/
 *.bak
 *.tmp
 *.temp
+
+# ============== Non-dev Deliverables ==============
+# PDF technical reports and intermediate render artifacts
+output/pdf/
+tmp/pdfs/

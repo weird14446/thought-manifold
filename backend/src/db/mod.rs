@@ -49,11 +49,14 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
             author_id BIGINT NOT NULL,
             is_published BOOLEAN NOT NULL DEFAULT TRUE,
             published_at DATETIME(6) NULL,
+            paper_status VARCHAR(32) NOT NULL DEFAULT 'published',
             created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
             updated_at DATETIME(6) NULL,
             INDEX idx_posts_author_id (author_id),
             INDEX idx_posts_published_created_at (is_published, created_at),
             INDEX idx_posts_category_created_at (category_id, created_at),
+            INDEX idx_posts_paper_status_created_at (paper_status, created_at),
+            CONSTRAINT chk_posts_paper_status CHECK (paper_status IN ('draft', 'submitted', 'revision', 'accepted', 'published', 'rejected')),
             CONSTRAINT fk_posts_category_id FOREIGN KEY (category_id) REFERENCES post_categories(id),
             CONSTRAINT fk_posts_author_id FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -64,6 +67,12 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
 
     ensure_posts_column(&pool, "is_published", "BOOLEAN NOT NULL DEFAULT TRUE").await?;
     ensure_posts_column(&pool, "published_at", "DATETIME(6) NULL").await?;
+    ensure_posts_column(
+        &pool,
+        "paper_status",
+        "VARCHAR(32) NOT NULL DEFAULT 'published'",
+    )
+    .await?;
 
     sqlx::query(
         r#"
@@ -325,8 +334,8 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
-    // Enforce publication policy for existing paper posts:
-    // only papers whose latest completed review decision is "accept" remain published.
+    // Paper status machine backfill:
+    // draft/submitted/revision/accepted/published/rejected.
     sqlx::query(
         r#"
         UPDATE posts p
@@ -343,13 +352,71 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
             ) latest ON latest.post_id = r.post_id AND latest.max_id = r.id
             WHERE r.status_id = 2
         ) latest_review ON latest_review.post_id = p.id
+        SET p.paper_status = CASE
+            WHEN latest_review.decision = 'accept' AND p.is_published = TRUE THEN 'published'
+            WHEN latest_review.decision = 'accept' THEN 'accepted'
+            WHEN latest_review.decision IN ('minor_revision', 'major_revision') THEN 'revision'
+            WHEN latest_review.decision = 'reject' THEN 'rejected'
+            ELSE p.paper_status
+        END
+        WHERE c.code = 'paper' AND latest_review.decision IS NOT NULL
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE posts p
+        JOIN post_categories c ON c.id = p.category_id
+        LEFT JOIN (
+            SELECT r.post_id, s.code AS status_code
+            FROM post_ai_reviews r
+            JOIN ai_review_statuses s ON s.id = r.status_id
+            JOIN (
+                SELECT post_id, MAX(id) AS max_id
+                FROM post_ai_reviews
+                GROUP BY post_id
+            ) latest ON latest.post_id = r.post_id AND latest.max_id = r.id
+        ) latest_any ON latest_any.post_id = p.id
+        LEFT JOIN (
+            SELECT post_id, MAX(id) AS latest_completed_id
+            FROM post_ai_reviews
+            WHERE status_id = 2
+            GROUP BY post_id
+        ) latest_completed ON latest_completed.post_id = p.id
+        SET p.paper_status = 'submitted'
+        WHERE c.code = 'paper'
+          AND latest_completed.latest_completed_id IS NULL
+          AND latest_any.status_code IN ('pending', 'failed')
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE posts p
+        JOIN post_categories c ON c.id = p.category_id
+        SET p.paper_status = 'draft'
+        WHERE c.code = 'paper'
+          AND (
+            p.paper_status NOT IN ('draft', 'submitted', 'revision', 'accepted', 'published', 'rejected')
+            OR (p.paper_status = 'published' AND p.is_published = FALSE)
+          )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE posts p
+        JOIN post_categories c ON c.id = p.category_id
         SET
-            p.is_published = CASE
-                WHEN latest_review.decision = 'accept' THEN TRUE
-                ELSE FALSE
-            END,
+            p.is_published = CASE WHEN p.paper_status = 'published' THEN TRUE ELSE FALSE END,
             p.published_at = CASE
-                WHEN latest_review.decision = 'accept' THEN COALESCE(p.published_at, p.created_at)
+                WHEN p.paper_status = 'published' THEN COALESCE(p.published_at, p.created_at)
                 ELSE NULL
             END
         WHERE c.code = 'paper'
@@ -357,6 +424,22 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE posts p
+        JOIN post_categories c ON c.id = p.category_id
+        SET
+            p.paper_status = 'published',
+            p.is_published = TRUE,
+            p.published_at = COALESCE(p.published_at, p.created_at)
+        WHERE c.code <> 'paper'
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    ensure_posts_paper_status_check(&pool).await?;
 
     if let Ok(admin_username) = std::env::var("ADMIN_USERNAME") {
         if !admin_username.is_empty() {
@@ -395,6 +478,30 @@ async fn ensure_posts_column(
             column_name, column_definition
         );
         sqlx::query(&alter_sql).execute(pool).await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_posts_paper_status_check(pool: &MySqlPool) -> Result<(), sqlx::Error> {
+    let (existing_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM information_schema.table_constraints
+        WHERE table_schema = DATABASE()
+          AND table_name = 'posts'
+          AND constraint_name = 'chk_posts_paper_status'
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if existing_count == 0 {
+        sqlx::query(
+            "ALTER TABLE posts ADD CONSTRAINT chk_posts_paper_status CHECK (paper_status IN ('draft', 'submitted', 'revision', 'accepted', 'published', 'rejected'))",
+        )
+        .execute(pool)
+        .await?;
     }
 
     Ok(())
