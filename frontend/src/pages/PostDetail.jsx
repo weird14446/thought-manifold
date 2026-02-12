@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
-import { postsAPI, commentsAPI, adminAPI } from '../api';
+import { useParams, useNavigate, Link, useLocation } from 'react-router-dom';
+import { postsAPI, commentsAPI, adminAPI, reviewsAPI } from '../api';
 import { useAuth } from '../context/AuthContext';
 
 const categoryLabels = {
@@ -19,12 +19,26 @@ const categoryEmojis = {
     other: '📁',
 };
 
+const reviewStatusLabels = {
+    pending: '심사 대기중',
+    completed: '심사 완료',
+    failed: '심사 실패',
+};
+
+const reviewDecisionLabels = {
+    accept: 'Accept',
+    minor_revision: 'Minor Revision',
+    major_revision: 'Major Revision',
+    reject: 'Reject',
+};
+
 const POST_DETAIL_CACHE_TTL_MS = 2000;
 const postDetailRequestCache = new Map();
 
-function getPostDeduped(postId) {
+function getPostDeduped(postId, source = null) {
+    const cacheKey = source ? `${postId}:${source}` : `${postId}`;
     const now = Date.now();
-    const cached = postDetailRequestCache.get(postId);
+    const cached = postDetailRequestCache.get(cacheKey);
 
     if (cached?.data && now - cached.timestamp < POST_DETAIL_CACHE_TTL_MS) {
         return Promise.resolve(cached.data);
@@ -34,9 +48,12 @@ function getPostDeduped(postId) {
         return cached.promise;
     }
 
-    const promise = postsAPI.getPost(postId)
+    const params = {};
+    if (source) params.source = source;
+
+    const promise = postsAPI.getPost(postId, params)
         .then((data) => {
-            postDetailRequestCache.set(postId, {
+            postDetailRequestCache.set(cacheKey, {
                 data,
                 timestamp: Date.now(),
                 promise: null,
@@ -44,11 +61,11 @@ function getPostDeduped(postId) {
             return data;
         })
         .catch((error) => {
-            postDetailRequestCache.delete(postId);
+            postDetailRequestCache.delete(cacheKey);
             throw error;
         });
 
-    postDetailRequestCache.set(postId, {
+    postDetailRequestCache.set(cacheKey, {
         data: cached?.data || null,
         timestamp: cached?.timestamp || 0,
         promise,
@@ -59,8 +76,11 @@ function getPostDeduped(postId) {
 
 function PostDetail() {
     const { id } = useParams();
+    const location = useLocation();
     const navigate = useNavigate();
     const { user } = useAuth();
+    const source = new URLSearchParams(location.search).get('source');
+    const reviewCenterSource = source === 'review_center' ? 'review_center' : null;
 
     const [post, setPost] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -69,6 +89,10 @@ function PostDetail() {
     const [userLiked, setUserLiked] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+    const [review, setReview] = useState(null);
+    const [reviewLoading, setReviewLoading] = useState(false);
+    const [reviewError, setReviewError] = useState(null);
+    const [reviewRerunning, setReviewRerunning] = useState(false);
 
     // Comments state
     const [comments, setComments] = useState([]);
@@ -84,7 +108,7 @@ function PostDetail() {
                 if (!cancelled) {
                     setLoading(true);
                 }
-                const data = await getPostDeduped(id);
+                const data = await getPostDeduped(id, reviewCenterSource);
                 if (cancelled) return;
                 setPost(data);
                 setUserLiked(data.user_liked ?? false);
@@ -118,7 +142,7 @@ function PostDetail() {
         return () => {
             cancelled = true;
         };
-    }, [id]);
+    }, [id, reviewCenterSource]);
 
     const handleLike = async () => {
         if (!user) {
@@ -200,6 +224,94 @@ function PostDetail() {
     const isAuthor = user && post && user.id === post.author_id;
     const canDeletePost = user && post && (user.id === post.author_id || user.is_admin);
     const isPdf = post?.file_name?.toLowerCase().endsWith('.pdf');
+    const canViewAiReview = !!(
+        post &&
+        post.category === 'paper' &&
+        user &&
+        (user.id === post.author_id || user.is_admin)
+    );
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const fetchLatestReview = async () => {
+            if (!post || post.category !== 'paper' || !canViewAiReview) {
+                setReview(null);
+                setReviewError(null);
+                return;
+            }
+
+            setReviewLoading(true);
+            setReviewError(null);
+
+            try {
+                const data = await reviewsAPI.getLatest(post.id);
+                if (!cancelled) {
+                    setReview(data);
+                }
+            } catch (err) {
+                if (cancelled) return;
+                if ([401, 403, 404].includes(err.response?.status)) {
+                    if (err.response?.status === 404) {
+                        setReview(null);
+                    } else {
+                        setReview(null);
+                        setReviewError(null);
+                    }
+                } else {
+                    setReviewError(err.response?.data?.detail || 'AI 심사 결과를 불러오지 못했습니다.');
+                }
+            } finally {
+                if (!cancelled) {
+                    setReviewLoading(false);
+                }
+            }
+        };
+
+        fetchLatestReview();
+        return () => {
+            cancelled = true;
+        };
+    }, [post?.id, post?.category, post?.author_id, canViewAiReview]);
+
+    useEffect(() => {
+        if (!post || !canViewAiReview || review?.status !== 'pending') return;
+
+        let cancelled = false;
+        const timer = setInterval(async () => {
+            try {
+                const data = await reviewsAPI.getLatest(post.id);
+                if (cancelled) return;
+                setReview(data);
+                if (data.status !== 'pending') {
+                    clearInterval(timer);
+                }
+            } catch {
+                // Keep silent polling behavior for transient errors.
+            }
+        }, 4000);
+
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+        };
+    }, [post?.id, canViewAiReview, review?.status]);
+
+    const handleRerunReview = async () => {
+        if (!post || !canViewAiReview || reviewRerunning) return;
+        setReviewRerunning(true);
+        setReviewError(null);
+
+        try {
+            await reviewsAPI.rerun(post.id);
+            const latest = await reviewsAPI.getLatest(post.id);
+            setReview(latest);
+        } catch (err) {
+            setReviewError(err.response?.data?.detail || '재심사 요청에 실패했습니다.');
+        } finally {
+            setReviewRerunning(false);
+        }
+    };
 
     const formattedDate = post ? new Date(post.created_at).toLocaleDateString('ko-KR', {
         year: 'numeric',
@@ -289,6 +401,118 @@ function PostDetail() {
                                 </div>
                             </div>
                         </header>
+
+                        {post.category === 'paper' && canViewAiReview && (
+                            <section className="post-ai-review-card">
+                                <div className="post-ai-review-header">
+                                    <div>
+                                        <h2>🤖 AI 논문 심사</h2>
+                                        <p>편집자 1차 심사 및 동료심사 대체 결과</p>
+                                    </div>
+                                    <div className="post-ai-review-header-actions">
+                                        <span className={`ai-review-status-badge ${review?.status || 'empty'}`}>
+                                            {reviewStatusLabels[review?.status] || '심사 이력 없음'}
+                                        </span>
+                                        <button
+                                            type="button"
+                                            className="btn btn-secondary btn-sm"
+                                            onClick={handleRerunReview}
+                                            disabled={reviewRerunning}
+                                        >
+                                            {reviewRerunning ? '재심사 요청 중...' : '재심사 실행'}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {reviewLoading ? (
+                                    <div className="post-ai-review-loading">심사 결과를 불러오는 중...</div>
+                                ) : reviewError ? (
+                                    <div className="post-ai-review-error">{reviewError}</div>
+                                ) : !review ? (
+                                    <div className="post-ai-review-empty">등록된 AI 심사 이력이 없습니다.</div>
+                                ) : (
+                                    <div className="post-ai-review-content">
+                                        <div className="post-ai-review-decision">
+                                            <span className="label">최종 판정</span>
+                                            <span className="value">
+                                                {reviewDecisionLabels[review.decision] || '-'}
+                                            </span>
+                                        </div>
+                                        <div className="post-ai-review-scores">
+                                            <div className="score-item">
+                                                <span>총점</span>
+                                                <strong>{review.scores?.overall_score ?? '-'}</strong>
+                                            </div>
+                                            <div className="score-item">
+                                                <span>참신성</span>
+                                                <strong>{review.scores?.novelty_score ?? '-'}</strong>
+                                            </div>
+                                            <div className="score-item">
+                                                <span>방법론</span>
+                                                <strong>{review.scores?.methodology_score ?? '-'}</strong>
+                                            </div>
+                                            <div className="score-item">
+                                                <span>명확성</span>
+                                                <strong>{review.scores?.clarity_score ?? '-'}</strong>
+                                            </div>
+                                            <div className="score-item">
+                                                <span>인용 정합성</span>
+                                                <strong>{review.scores?.citation_integrity_score ?? '-'}</strong>
+                                            </div>
+                                        </div>
+
+                                        <div className="post-ai-review-block">
+                                            <h3>편집자 대체 요약</h3>
+                                            <p>{review.editorial?.summary || '-'}</p>
+                                        </div>
+
+                                        <div className="post-ai-review-block">
+                                            <h3>동료심사 대체 종합</h3>
+                                            <p>{review.peer?.summary || '-'}</p>
+                                        </div>
+
+                                        <div className="post-ai-review-lists">
+                                            <div className="review-list-item">
+                                                <h4>주요 이슈</h4>
+                                                {review.peer?.major_issues?.length ? (
+                                                    <ul>{review.peer.major_issues.map((item) => <li key={item}>{item}</li>)}</ul>
+                                                ) : <p>-</p>}
+                                            </div>
+                                            <div className="review-list-item">
+                                                <h4>경미 이슈</h4>
+                                                {review.peer?.minor_issues?.length ? (
+                                                    <ul>{review.peer.minor_issues.map((item) => <li key={item}>{item}</li>)}</ul>
+                                                ) : <p>-</p>}
+                                            </div>
+                                            <div className="review-list-item">
+                                                <h4>필수 수정사항</h4>
+                                                {review.peer?.required_revisions?.length ? (
+                                                    <ul>{review.peer.required_revisions.map((item) => <li key={item}>{item}</li>)}</ul>
+                                                ) : <p>-</p>}
+                                            </div>
+                                            <div className="review-list-item">
+                                                <h4>강점</h4>
+                                                {review.peer?.strengths?.length ? (
+                                                    <ul>{review.peer.strengths.map((item) => <li key={item}>{item}</li>)}</ul>
+                                                ) : <p>-</p>}
+                                            </div>
+                                        </div>
+
+                                        {review.status === 'failed' && review.error_message && (
+                                            <div className="post-ai-review-error">
+                                                {review.error_message}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </section>
+                        )}
+
+                        {!post.is_published && canViewAiReview && (
+                            <div className="post-unpublished-notice">
+                                현재 이 논문은 공개 전 상태입니다. <Link to="/reviews">AI 심사 센터</Link>에서 진행 상태를 확인하세요.
+                            </div>
+                        )}
 
                         {/* Content */}
                         <div className="post-detail-content">

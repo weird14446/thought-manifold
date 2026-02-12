@@ -39,6 +39,10 @@ function Header() {
                         <li><Link to="/" className={`nav-link ${location.pathname === '/' ? 'active' : ''}`}>홈</Link></li>
                         <li><Link to="/explore" className={`nav-link ${location.pathname === '/explore' ? 'active' : ''}`}>탐색</Link></li>
                         <li><Link to="/about" className={`nav-link ${location.pathname === '/about' ? 'active' : ''}`}>소개</Link></li>
+                        <li><Link to="/guidelines" className={`nav-link ${location.pathname === '/guidelines' ? 'active' : ''}`}>가이드라인</Link></li>
+                        {user && (
+                            <li><Link to="/reviews" className={`nav-link ${location.pathname === '/reviews' ? 'active' : ''}`}>심사센터</Link></li>
+                        )}
                     </ul>
 
                     <div className="nav-actions">
@@ -72,6 +76,9 @@ function Header() {
                                             <div className="user-dropdown-divider" />
                                             <Link to="/profile" className="user-dropdown-item">
                                                 👤 프로필
+                                            </Link>
+                                            <Link to="/reviews" className="user-dropdown-item">
+                                                🧪 심사센터
                                             </Link>
                                             {user.is_admin && (
                                                 <Link to="/admin" className="user-dropdown-item">

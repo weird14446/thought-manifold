@@ -1,13 +1,14 @@
+mod ai_review;
 mod db;
 mod metrics;
 mod models;
 mod routes;
 
 use axum::{
+    Router,
     http::StatusCode,
     response::{Html, IntoResponse},
     routing::get,
-    Router,
 };
 use std::path::PathBuf;
 use tower_http::{
@@ -17,7 +18,10 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use routes::{admin_routes, auth_routes, comments_routes, metrics_routes, posts_routes, users_routes};
+use routes::{
+    admin_routes, auth_routes, comments_routes, metrics_routes, posts_routes, review_center_routes,
+    reviews_routes, users_routes,
+};
 
 fn frontend_dist_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../frontend/dist")
@@ -27,8 +31,10 @@ fn frontend_dist_dir() -> PathBuf {
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "backend_rust=debug,tower_http=debug".into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "backend_rust=debug,tower_http=debug".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -38,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     // Database setup
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "mysql://tm_user:tm_pass@127.0.0.1:3306/thought_manifold".to_string());
-    
+
     let pool = db::init_db(&database_url).await?;
     tracing::info!("Database initialized");
 
@@ -60,6 +66,8 @@ async fn main() -> anyhow::Result<()> {
         .nest("/api/users", users_routes())
         .nest("/api/posts", posts_routes())
         .nest("/api/posts", comments_routes())
+        .nest("/api/posts", reviews_routes())
+        .nest("/api/reviews", review_center_routes())
         .nest("/api/admin", admin_routes())
         .nest("/api/metrics", metrics_routes())
         .route("/api/health", get(health_check));
@@ -77,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
     // Run the server
     let addr = "0.0.0.0:8000";
     tracing::info!("Server running on http://{}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 
@@ -91,7 +99,7 @@ async fn health_check() -> impl IntoResponse {
 async fn serve_spa() -> impl IntoResponse {
     let frontend_dir = frontend_dist_dir();
     let index_path = frontend_dir.join("index.html");
-    
+
     match tokio::fs::read_to_string(&index_path).await {
         Ok(html) => Html(html).into_response(),
         Err(_) => (
@@ -99,7 +107,8 @@ async fn serve_spa() -> impl IntoResponse {
             axum::Json(serde_json::json!({
                 "message": "Welcome to Thought Manifold API (Rust)",
                 "docs": "API documentation not available in Rust version"
-            }))
-        ).into_response(),
+            })),
+        )
+            .into_response(),
     }
 }

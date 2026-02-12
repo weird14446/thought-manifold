@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
-use sqlx::FromRow;
 use super::metrics::PostMetrics;
 use super::user::UserResponse;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Post {
@@ -14,6 +14,8 @@ pub struct Post {
     pub file_path: Option<String>,
     pub file_name: Option<String>,
     pub author_id: i64,
+    pub is_published: bool,
+    pub published_at: Option<DateTime<Utc>>,
     pub view_count: i64,
     pub like_count: i64,
     pub created_at: DateTime<Utc>,
@@ -31,6 +33,8 @@ pub struct PostResponse {
     pub file_name: Option<String>,
     pub author_id: i64,
     pub author: UserResponse,
+    pub is_published: bool,
+    pub published_at: Option<DateTime<Utc>>,
     pub view_count: i64,
     pub like_count: i64,
     pub user_liked: Option<bool>,

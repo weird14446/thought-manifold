@@ -1,15 +1,15 @@
 use axum::{
+    Router,
     extract::{Json, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use serde::Deserialize;
 use sqlx::MySqlPool;
 
-use crate::models::{User, UserResponse};
 use crate::metrics::compute_author_metrics;
+use crate::models::{User, UserResponse};
 use crate::routes::auth::extract_current_user;
 
 #[derive(Debug, Deserialize)]
@@ -34,7 +34,10 @@ async fn list_users(
         .fetch_all(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let responses: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
@@ -50,10 +53,16 @@ async fn get_user(
         .fetch_optional(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?
         .ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({"detail": "User not found"})))
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"detail": "User not found"})),
+            )
         })?;
 
     Ok(Json(UserResponse::from(user)))
@@ -107,7 +116,11 @@ async fn update_profile(
     let bio = match &input.bio {
         Some(b) => {
             let trimmed = b.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
         }
         None => current_user.bio.clone(),
     };
@@ -122,7 +135,10 @@ async fn update_profile(
         .execute(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let updated_user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
@@ -130,7 +146,10 @@ async fn update_profile(
         .fetch_one(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     Ok(Json(UserResponse::from(updated_user)))
@@ -146,10 +165,16 @@ async fn get_user_posts(
         .fetch_optional(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?
         .ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({"detail": "User not found"})))
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"detail": "User not found"})),
+            )
         })?;
 
     let posts = sqlx::query_as::<_, crate::models::post::Post>(
@@ -163,6 +188,8 @@ async fn get_user_posts(
             pf.file_path,
             pf.file_name,
             p.author_id,
+            p.is_published,
+            p.published_at,
             COALESCE(ps.view_count, 0) AS view_count,
             COALESCE(ps.like_count, 0) AS like_count,
             p.created_at,
@@ -171,7 +198,7 @@ async fn get_user_posts(
         JOIN post_categories c ON c.id = p.category_id
         LEFT JOIN post_files pf ON pf.post_id = p.id
         LEFT JOIN post_stats ps ON ps.post_id = p.id
-        WHERE p.author_id = ?
+        WHERE p.author_id = ? AND p.is_published = TRUE
         ORDER BY p.created_at DESC
         "#,
     )
@@ -179,7 +206,10 @@ async fn get_user_posts(
     .fetch_all(&pool)
     .await
     .map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": e.to_string()})),
+        )
     })?;
 
     // Build responses with author info
@@ -188,7 +218,10 @@ async fn get_user_posts(
         .fetch_one(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let author_resp = UserResponse::from(author);
@@ -206,6 +239,8 @@ async fn get_user_posts(
                 "file_name": p.file_name,
                 "author_id": p.author_id,
                 "author": author_resp,
+                "is_published": p.is_published,
+                "published_at": p.published_at,
                 "view_count": p.view_count,
                 "like_count": p.like_count,
                 "created_at": p.created_at,

@@ -1,7 +1,7 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { Header, Footer } from './components';
-import { Home, Upload, Login, PostDetail, EditPost, Profile, Admin, StaticInfoPage } from './pages';
+import { Home, Upload, Login, PostDetail, EditPost, Profile, Admin, ReviewCenter, StaticInfoPage, AboutPage, GuidelinesPage } from './pages';
 import './index.css';
 
 function App() {
@@ -19,14 +19,9 @@ function App() {
           <Route path="/profile" element={<Profile />} />
           <Route path="/profile/:id" element={<Profile />} />
           <Route path="/admin" element={<Admin />} />
-          <Route
-            path="/about"
-            element={<StaticInfoPage title="소개" description="Thought Manifold의 목표와 방향을 정리하는 공간입니다." />}
-          />
-          <Route
-            path="/guidelines"
-            element={<StaticInfoPage title="가이드라인" description="커뮤니티 이용 가이드라인과 작성 원칙을 안내합니다." />}
-          />
+          <Route path="/reviews" element={<ReviewCenter />} />
+          <Route path="/about" element={<AboutPage />} />
+          <Route path="/guidelines" element={<GuidelinesPage />} />
           <Route
             path="/faq"
             element={<StaticInfoPage title="자주 묻는 질문" description="자주 발생하는 질문을 빠르게 확인할 수 있습니다." />}

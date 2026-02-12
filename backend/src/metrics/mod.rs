@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::models::{AuthorMetrics, JournalMetrics};
-use sqlx::{QueryBuilder, MySql, MySqlPool};
+use sqlx::{MySql, MySqlPool, QueryBuilder};
 
 pub const METRIC_VERSION: &str = "v1";
 pub const JOURNAL_IMPACT_FORMULA: &str = "jif_2y";

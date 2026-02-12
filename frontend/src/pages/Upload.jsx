@@ -88,7 +88,7 @@ function Upload() {
                 citations: category === 'paper' ? (citations.trim() || undefined) : undefined,
                 file: file || undefined,
             });
-            navigate('/');
+            navigate(category === 'paper' ? '/reviews' : '/');
         } catch (err) {
             console.error('Failed to create post:', err);
             if (err.response?.status === 401) {

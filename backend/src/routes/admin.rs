@@ -1,14 +1,15 @@
 use axum::{
-    extract::{Json, Path, State},
+    Router,
+    extract::{Json, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{delete, get, put},
-    Router,
 };
 use chrono::{Datelike, Utc};
 use serde::Deserialize;
 use sqlx::MySqlPool;
 
+use crate::ai_review::{fetch_admin_reviews, fetch_ai_review_metrics, parse_status_filter};
 use crate::metrics::compute_impact_factor;
 use crate::models::{User, UserResponse};
 use crate::routes::auth::extract_current_user;
@@ -34,6 +35,7 @@ pub fn admin_routes() -> Router<MySqlPool> {
     Router::new()
         .route("/stats", get(admin_stats))
         .route("/users", get(admin_list_users))
+        .route("/reviews", get(admin_list_reviews))
         .route("/users/{user_id}/role", put(admin_update_role))
         .route("/users/{user_id}", delete(admin_delete_user))
         .route("/posts/{post_id}", delete(admin_delete_post))
@@ -53,21 +55,30 @@ async fn admin_stats(
         .fetch_one(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let post_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM posts")
         .fetch_one(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let comment_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM comments")
         .fetch_one(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let total_views: (i64,) =
@@ -75,7 +86,10 @@ async fn admin_stats(
             .fetch_one(&pool)
             .await
             .map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"detail": e.to_string()})),
+                )
             })?;
 
     let total_likes: (i64,) =
@@ -83,7 +97,10 @@ async fn admin_stats(
             .fetch_one(&pool)
             .await
             .map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"detail": e.to_string()})),
+                )
             })?;
 
     let journal_metrics = compute_impact_factor(&pool, Utc::now().year())
@@ -95,6 +112,13 @@ async fn admin_stats(
             )
         })?;
 
+    let ai_review_metrics = fetch_ai_review_metrics(&pool).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": e.to_string()})),
+        )
+    })?;
+
     Ok(Json(serde_json::json!({
         "total_users": user_count.0,
         "total_posts": post_count.0,
@@ -102,7 +126,48 @@ async fn admin_stats(
         "total_views": total_views.0,
         "total_likes": total_likes.0,
         "journal_metrics": journal_metrics,
+        "ai_review_metrics": ai_review_metrics,
     })))
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminReviewQuery {
+    status: Option<String>,
+    page: Option<i32>,
+    per_page: Option<i32>,
+}
+
+async fn admin_list_reviews(
+    State(pool): State<MySqlPool>,
+    headers: HeaderMap,
+    Query(query): Query<AdminReviewQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let _admin = extract_admin_user(&pool, &headers).await?;
+
+    let status_filter = if let Some(status_raw) = query.status.as_deref() {
+        Some(parse_status_filter(status_raw).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"detail": "Invalid status filter. Use pending|completed|failed"})),
+            )
+        })?)
+    } else {
+        None
+    };
+
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(20).clamp(1, 100);
+
+    let response = fetch_admin_reviews(&pool, status_filter, page, per_page)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
+        })?;
+
+    Ok(Json(response))
 }
 
 // ============================
@@ -118,20 +183,25 @@ async fn admin_list_users(
         .fetch_all(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     // Return full user info with post counts
     let mut user_list = Vec::new();
     for u in users {
-        let post_count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM posts WHERE author_id = ?")
-                .bind(u.id)
-                .fetch_one(&pool)
-                .await
-                .map_err(|e| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
-                })?;
+        let post_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM posts WHERE author_id = ?")
+            .bind(u.id)
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"detail": e.to_string()})),
+                )
+            })?;
 
         let comment_count: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM comments WHERE author_id = ?")
@@ -139,7 +209,10 @@ async fn admin_list_users(
                 .fetch_one(&pool)
                 .await
                 .map_err(|e| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"detail": e.to_string()})),
+                    )
                 })?;
 
         let resp = UserResponse::from(u);
@@ -190,10 +263,16 @@ async fn admin_update_role(
         .fetch_optional(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?
         .ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({"detail": "User not found"})))
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"detail": "User not found"})),
+            )
         })?;
 
     sqlx::query("UPDATE users SET is_admin = ? WHERE id = ?")
@@ -202,7 +281,10 @@ async fn admin_update_role(
         .execute(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let updated_user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
@@ -210,7 +292,10 @@ async fn admin_update_role(
         .fetch_one(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     Ok(Json(UserResponse::from(updated_user)))
@@ -240,7 +325,10 @@ async fn admin_delete_user(
         .execute(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     sqlx::query("DELETE FROM post_likes WHERE user_id = ?")
@@ -248,7 +336,10 @@ async fn admin_delete_user(
         .execute(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     sqlx::query(
@@ -274,7 +365,10 @@ async fn admin_delete_user(
         .execute(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let result = sqlx::query("DELETE FROM users WHERE id = ?")
@@ -282,7 +376,10 @@ async fn admin_delete_user(
         .execute(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     if result.rows_affected() == 0 {
@@ -311,7 +408,10 @@ async fn admin_delete_post(
         .execute(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     sqlx::query("DELETE FROM post_likes WHERE post_id = ?")
@@ -319,7 +419,10 @@ async fn admin_delete_post(
         .execute(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     sqlx::query("DELETE FROM post_citations WHERE citing_post_id = ? OR cited_post_id = ?")
@@ -339,7 +442,10 @@ async fn admin_delete_post(
         .execute(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     if result.rows_affected() == 0 {
@@ -367,7 +473,10 @@ async fn admin_delete_comment(
         .execute(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     if result.rows_affected() == 0 {

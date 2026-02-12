@@ -1,18 +1,18 @@
 use axum::{
+    Router,
     extract::{Json, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Redirect},
+    response::{AppendHeaders, IntoResponse, Redirect},
     routing::{get, post},
-    Router,
 };
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::{DEFAULT_COST, hash, verify};
 use chrono::Utc;
-use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
-use crate::models::{User, UserResponse, CreateUser, TokenResponse};
+use crate::models::{CreateUser, TokenResponse, User, UserResponse};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -38,16 +38,17 @@ async fn register(
     Json(input): Json<CreateUser>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     // Check if user exists
-    let existing = sqlx::query_as::<_, User>(
-        "SELECT * FROM users WHERE username = ? OR email = ?"
-    )
-    .bind(&input.username)
-    .bind(&input.email)
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
-    })?;
+    let existing = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ? OR email = ?")
+        .bind(&input.username)
+        .bind(&input.email)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
+        })?;
 
     if existing.is_some() {
         return Err((
@@ -58,7 +59,10 @@ async fn register(
 
     // Hash password
     let hashed = hash(&input.password, DEFAULT_COST).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": e.to_string()})),
+        )
     })?;
 
     let display_name = input.display_name.unwrap_or_else(|| input.username.clone());
@@ -67,7 +71,7 @@ async fn register(
     // Insert user
     let result = sqlx::query(
         r#"INSERT INTO users (username, email, hashed_password, display_name, created_at) 
-           VALUES (?, ?, ?, ?, ?)"#
+           VALUES (?, ?, ?, ?, ?)"#,
     )
     .bind(&input.username)
     .bind(&input.email)
@@ -77,7 +81,10 @@ async fn register(
     .execute(&pool)
     .await
     .map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": e.to_string()})),
+        )
     })?;
 
     let user_id = result.last_insert_id() as i64;
@@ -87,7 +94,10 @@ async fn register(
         .fetch_one(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     Ok((StatusCode::CREATED, Json(UserResponse::from(user))))
@@ -108,19 +118,31 @@ async fn login(
         .fetch_optional(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let user = user.ok_or_else(|| {
-        (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"detail": "Incorrect username or password"})))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"detail": "Incorrect username or password"})),
+        )
     })?;
 
     let hashed = user.hashed_password.as_ref().ok_or_else(|| {
-        (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"detail": "This account uses Google login"})))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"detail": "This account uses Google login"})),
+        )
     })?;
 
     let valid = verify(&input.password, hashed).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": e.to_string()})),
+        )
     })?;
 
     if !valid {
@@ -137,8 +159,8 @@ async fn login(
     }))
 }
 
-use axum::http::header::AUTHORIZATION;
 use axum::http::HeaderMap;
+use axum::http::header::AUTHORIZATION;
 
 async fn get_me(
     State(pool): State<MySqlPool>,
@@ -148,22 +170,31 @@ async fn get_me(
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| {
-            (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"detail": "Missing authorization header"})))
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"detail": "Missing authorization header"})),
+            )
         })?;
 
     let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
-        (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"detail": "Invalid authorization header"})))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"detail": "Invalid authorization header"})),
+        )
     })?;
 
     let secret = std::env::var("SECRET_KEY").expect("SECRET_KEY must be set in .env");
-    
+
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
         &Validation::default(),
     )
     .map_err(|_| {
-        (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"detail": "Invalid token"})))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"detail": "Invalid token"})),
+        )
     })?;
 
     let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
@@ -171,10 +202,16 @@ async fn get_me(
         .fetch_optional(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?
         .ok_or_else(|| {
-            (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"detail": "User not found"})))
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"detail": "User not found"})),
+            )
         })?;
 
     Ok(Json(UserResponse::from(user)))
@@ -188,22 +225,31 @@ pub async fn extract_current_user(
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| {
-            (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"detail": "Missing authorization header"})))
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"detail": "Missing authorization header"})),
+            )
         })?;
 
     let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
-        (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"detail": "Invalid authorization header"})))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"detail": "Invalid authorization header"})),
+        )
     })?;
 
     let secret = std::env::var("SECRET_KEY").expect("SECRET_KEY must be set in .env");
-    
+
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
         &Validation::default(),
     )
     .map_err(|_| {
-        (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"detail": "Invalid token"})))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"detail": "Invalid token"})),
+        )
     })?;
 
     sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
@@ -211,10 +257,16 @@ pub async fn extract_current_user(
         .fetch_optional(pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?
         .ok_or_else(|| {
-            (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"detail": "User not found"})))
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"detail": "User not found"})),
+            )
         })
 }
 
@@ -276,7 +328,10 @@ fn generate_jwt(username: &str) -> Result<String, (StatusCode, Json<serde_json::
         &EncodingKey::from_secret(secret.as_bytes()),
     )
     .map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": e.to_string()})),
+        )
     })
 }
 
@@ -289,15 +344,16 @@ fn generate_pkce() -> (String, String) {
     let code_verifier: String = (0..128)
         .map(|_| {
             let idx = rng.random_range(0..66u32);
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"[idx as usize] as char
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"[idx as usize]
+                as char
         })
         .collect();
 
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(code_verifier.as_bytes());
     let hash = hasher.finalize();
-    
+
     use base64::Engine;
     let code_challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash);
 
@@ -326,7 +382,10 @@ fn extract_cookie_value(cookie_header: &str, key: &str) -> Option<String> {
 
 async fn google_login() -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let client_id = std::env::var("GOOGLE_CLIENT_ID").map_err(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": "GOOGLE_CLIENT_ID not configured"})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": "GOOGLE_CLIENT_ID not configured"})),
+        )
     })?;
 
     let redirect_uri = std::env::var("GOOGLE_REDIRECT_URI")
@@ -365,12 +424,12 @@ async fn google_login() -> Result<impl IntoResponse, (StatusCode, Json<serde_jso
         "oauth_state={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600",
         state
     );
-    
+
     Ok((
-        [
+        AppendHeaders([
             (axum::http::header::SET_COOKIE, verifier_cookie),
             (axum::http::header::SET_COOKIE, state_cookie),
-        ],
+        ]),
         Redirect::temporary(&auth_url),
     ))
 }
@@ -407,10 +466,16 @@ async fn google_callback(
     Query(params): Query<GoogleCallbackParams>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let client_id = std::env::var("GOOGLE_CLIENT_ID").map_err(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": "GOOGLE_CLIENT_ID not configured"})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": "GOOGLE_CLIENT_ID not configured"})),
+        )
     })?;
     let client_secret = std::env::var("GOOGLE_CLIENT_SECRET").map_err(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": "GOOGLE_CLIENT_SECRET not configured"})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": "GOOGLE_CLIENT_SECRET not configured"})),
+        )
     })?;
     let redirect_uri = std::env::var("GOOGLE_REDIRECT_URI")
         .unwrap_or_else(|_| "http://localhost:8000/api/auth/google/callback".to_string());
@@ -461,7 +526,10 @@ async fn google_callback(
         .await
         .map_err(|e| {
             tracing::error!("Failed to exchange code: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": "Failed to exchange authorization code"})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": "Failed to exchange authorization code"})),
+            )
         })?;
 
     if !token_response.status().is_success() {
@@ -475,7 +543,10 @@ async fn google_callback(
 
     let google_token: GoogleTokenResponse = token_response.json().await.map_err(|e| {
         tracing::error!("Failed to parse token response: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": "Failed to parse Google token response"})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": "Failed to parse Google token response"})),
+        )
     })?;
 
     // Fetch user info from Google
@@ -486,12 +557,18 @@ async fn google_callback(
         .await
         .map_err(|e| {
             tracing::error!("Failed to fetch userinfo: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": "Failed to fetch Google user info"})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": "Failed to fetch Google user info"})),
+            )
         })?;
 
     let google_user: GoogleUserInfo = userinfo_response.json().await.map_err(|e| {
         tracing::error!("Failed to parse userinfo: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": "Failed to parse Google user info"})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": "Failed to parse Google user info"})),
+        )
     })?;
 
     // Find or create user
@@ -500,7 +577,10 @@ async fn google_callback(
         .fetch_optional(&pool)
         .await
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
         })?;
 
     let user = match user {
@@ -512,7 +592,10 @@ async fn google_callback(
                 .fetch_optional(&pool)
                 .await
                 .map_err(|e| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"detail": e.to_string()})),
+                    )
                 })?;
 
             match existing {
@@ -533,12 +616,18 @@ async fn google_callback(
                         .fetch_one(&pool)
                         .await
                         .map_err(|e| {
-                            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"detail": e.to_string()})),
+                            )
                         })?
                 }
                 None => {
                     // Create new user with Google info
-                    let username = google_user.email.split('@').next()
+                    let username = google_user
+                        .email
+                        .split('@')
+                        .next()
                         .unwrap_or("user")
                         .to_string();
 
@@ -551,7 +640,10 @@ async fn google_callback(
                             .fetch_optional(&pool)
                             .await
                             .map_err(|e| {
-                                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(serde_json::json!({"detail": e.to_string()})),
+                                )
                             })?;
                         if exists.is_none() {
                             break;
@@ -584,7 +676,10 @@ async fn google_callback(
                         .fetch_one(&pool)
                         .await
                         .map_err(|e| {
-                            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": e.to_string()})))
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"detail": e.to_string()})),
+                            )
                         })?
                 }
             }
@@ -595,22 +690,21 @@ async fn google_callback(
     let jwt_token = generate_jwt(&user.username)?;
 
     // Redirect to frontend with token
-    let frontend_url = std::env::var("FRONTEND_URL")
-        .unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let frontend_url =
+        std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
 
     let redirect_url = format!("{}/?token={}", frontend_url, jwt_token);
 
     // Clear OAuth cookies after successful login.
     let clear_verifier_cookie =
         "oauth_verifier=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".to_string();
-    let clear_state_cookie =
-        "oauth_state=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".to_string();
+    let clear_state_cookie = "oauth_state=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".to_string();
 
     Ok((
-        [
+        AppendHeaders([
             (axum::http::header::SET_COOKIE, clear_verifier_cookie),
             (axum::http::header::SET_COOKIE, clear_state_cookie),
-        ],
+        ]),
         Redirect::temporary(&redirect_url),
     ))
 }

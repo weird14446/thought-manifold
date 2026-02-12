@@ -1,20 +1,24 @@
 use axum::{
-    extract::{multipart::MultipartError, DefaultBodyLimit, Multipart, Path, Query, State},
+    Json, Router,
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State, multipart::MultipartError},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use chrono::Utc;
-use sqlx::{QueryBuilder, MySql, MySqlPool};
+use serde::Deserialize;
+use sqlx::{MySql, MySqlPool, QueryBuilder};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path as FsPath, PathBuf},
 };
 use uuid::Uuid;
 
-use crate::metrics::{compute_citation_count, compute_citation_counts_for_posts, METRIC_VERSION};
-use crate::models::{Post, PostListResponse, PostMetrics, PostQuery, PostResponse, User, UserResponse};
+use crate::ai_review::{ReviewTrigger, schedule_review};
+use crate::metrics::{METRIC_VERSION, compute_citation_count, compute_citation_counts_for_posts};
+use crate::models::{
+    Post, PostListResponse, PostMetrics, PostQuery, PostResponse, User, UserResponse,
+};
 use crate::routes::auth::{extract_current_user, extract_optional_user};
 
 const MAX_UPLOAD_SIZE_BYTES: usize = 10 * 1024 * 1024;
@@ -38,6 +42,8 @@ const POST_SELECT_COLUMNS: &str = r#"
         pf.file_path,
         pf.file_name,
         p.author_id,
+        p.is_published,
+        p.published_at,
         COALESCE(ps.view_count, 0) AS view_count,
         COALESCE(ps.like_count, 0) AS like_count,
         p.created_at,
@@ -50,7 +56,10 @@ const ALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
 pub fn posts_routes() -> Router<MySqlPool> {
     Router::new()
         .route("/", get(list_posts).post(create_post))
-        .route("/{post_id}", get(get_post).put(update_post).delete(delete_post))
+        .route(
+            "/{post_id}",
+            get(get_post).put(update_post).delete(delete_post),
+        )
         .route("/{post_id}/like", post(like_post))
         // Keep multipart parsing above the 10MB policy threshold so route-level validation can return a precise 413.
         .layer(DefaultBodyLimit::max(MULTIPART_BODY_LIMIT_BYTES))
@@ -64,9 +73,13 @@ async fn list_posts(
     let per_page = query.per_page.unwrap_or(10).clamp(1, 100);
     let offset = i64::from(page - 1) * i64::from(per_page);
 
-    let mut posts_qb =
-        QueryBuilder::<MySql>::new(format!("{}{}", POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE));
-    push_post_filters(&mut posts_qb, &query);
+    let mut posts_qb = QueryBuilder::<MySql>::new(format!(
+        "{}{}",
+        POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE
+    ));
+    let mut posts_has_where = false;
+    push_post_filters(&mut posts_qb, &query, &mut posts_has_where);
+    push_visibility_filter(&mut posts_qb, &mut posts_has_where);
     posts_qb.push(" ORDER BY p.created_at DESC LIMIT ");
     posts_qb.push_bind(i64::from(per_page));
     posts_qb.push(" OFFSET ");
@@ -78,9 +91,12 @@ async fn list_posts(
         .await
         .map_err(internal_error)?;
 
-    let mut count_qb =
-        QueryBuilder::<MySql>::new("SELECT COUNT(*) FROM posts p JOIN post_categories c ON c.id = p.category_id");
-    push_post_filters(&mut count_qb, &query);
+    let mut count_qb = QueryBuilder::<MySql>::new(
+        "SELECT COUNT(*) FROM posts p JOIN post_categories c ON c.id = p.category_id",
+    );
+    let mut count_has_where = false;
+    push_post_filters(&mut count_qb, &query, &mut count_has_where);
+    push_visibility_filter(&mut count_qb, &mut count_has_where);
     let (total,): (i64,) = count_qb
         .build_query_as()
         .fetch_one(&pool)
@@ -90,7 +106,9 @@ async fn list_posts(
     let author_map = fetch_authors_map(&pool, &posts)
         .await
         .map_err(internal_error)?;
-    let tags_map = fetch_tags_map(&pool, &posts).await.map_err(internal_error)?;
+    let tags_map = fetch_tags_map(&pool, &posts)
+        .await
+        .map_err(internal_error)?;
     let post_ids: Vec<i64> = posts.iter().map(|post| post.id).collect();
     let citation_count_map = compute_citation_counts_for_posts(&pool, &post_ids)
         .await
@@ -118,6 +136,8 @@ async fn list_posts(
             file_name: post.file_name,
             author_id: post.author_id,
             author,
+            is_published: post.is_published,
+            published_at: post.published_at,
             view_count: post.view_count,
             like_count: post.like_count,
             user_liked: None,
@@ -143,8 +163,12 @@ async fn get_post(
     State(pool): State<MySqlPool>,
     headers: HeaderMap,
     Path(post_id): Path<i64>,
+    Query(query): Query<PostDetailQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let post_query = format!("{}{} WHERE p.id = ?", POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE);
+    let post_query = format!(
+        "{}{} WHERE p.id = ?",
+        POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE
+    );
     let post = sqlx::query_as::<_, Post>(&post_query)
         .bind(post_id)
         .fetch_optional(&pool)
@@ -157,6 +181,21 @@ async fn get_post(
             )
         })?;
 
+    let current_user = extract_optional_user(&pool, &headers).await?;
+    if !post.is_published {
+        let allow_review_center_access = query.source.as_deref() == Some("review_center");
+        let has_private_access = current_user
+            .as_ref()
+            .map(|user| user.id == post.author_id || user.is_admin)
+            .unwrap_or(false);
+        if !allow_review_center_access || !has_private_access {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"detail": "Post not found"})),
+            ));
+        }
+    }
+
     sqlx::query(
         r#"
         INSERT INTO post_stats (post_id, view_count, like_count, updated_at)
@@ -164,11 +203,11 @@ async fn get_post(
         ON DUPLICATE KEY UPDATE view_count = view_count + 1, updated_at = VALUES(updated_at)
         "#,
     )
-        .bind(post_id)
-        .bind(Utc::now())
-        .execute(&pool)
-        .await
-        .map_err(internal_error)?;
+    .bind(post_id)
+    .bind(Utc::now())
+    .execute(&pool)
+    .await
+    .map_err(internal_error)?;
 
     let author = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
         .bind(post.author_id)
@@ -180,7 +219,6 @@ async fn get_post(
     let citation_count = compute_citation_count(&pool, post.id)
         .await
         .map_err(internal_error)?;
-    let current_user = extract_optional_user(&pool, &headers).await?;
     let user_liked = if let Some(user) = current_user {
         Some(
             fetch_user_liked(&pool, user.id, post_id)
@@ -201,6 +239,8 @@ async fn get_post(
         file_name: post.file_name,
         author_id: post.author_id,
         author: UserResponse::from(author),
+        is_published: post.is_published,
+        published_at: post.published_at,
         view_count: post.view_count + 1,
         like_count: post.like_count,
         user_liked,
@@ -296,15 +336,19 @@ async fn create_post(
         prepare_auto_citations_for_content(&pool, &category_code, &content, None).await?;
 
     let now = Utc::now();
+    let is_published = category_code != PAPER_CATEGORY;
+    let published_at = if is_published { Some(now) } else { None };
     let result = sqlx::query(
-        r#"INSERT INTO posts (title, content, summary, category_id, author_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)"#,
+        r#"INSERT INTO posts (title, content, summary, category_id, author_id, is_published, published_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&title)
     .bind(&content)
     .bind(&summary)
     .bind(category_id)
     .bind(current_user.id)
+    .bind(is_published)
+    .bind(published_at)
     .bind(now)
     .execute(&pool)
     .await
@@ -312,12 +356,14 @@ async fn create_post(
 
     let post_id = result.last_insert_id() as i64;
 
-    sqlx::query("INSERT INTO post_stats (post_id, view_count, like_count, updated_at) VALUES (?, 0, 0, ?)")
-        .bind(post_id)
-        .bind(now)
-        .execute(&pool)
-        .await
-        .map_err(internal_error)?;
+    sqlx::query(
+        "INSERT INTO post_stats (post_id, view_count, like_count, updated_at) VALUES (?, 0, 0, ?)",
+    )
+    .bind(post_id)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .map_err(internal_error)?;
 
     if let (Some(saved_path), Some(saved_name)) = (file_path.as_ref(), file_name.as_ref()) {
         sqlx::query(
@@ -336,6 +382,16 @@ async fn create_post(
     replace_post_citations(&pool, post_id, &manual_citation_ids).await?;
     replace_post_auto_citations(&pool, post_id, &auto_citation_ids).await?;
 
+    if category_code == PAPER_CATEGORY {
+        if let Err(error) = schedule_review(&pool, post_id, ReviewTrigger::AutoCreate).await {
+            tracing::error!(
+                "Failed to schedule auto AI review on create for post {}: {}",
+                post_id,
+                error
+            );
+        }
+    }
+
     let tags_vec = process_tags(&pool, post_id, &tags_str).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -343,7 +399,10 @@ async fn create_post(
         )
     })?;
 
-    let post_query = format!("{}{} WHERE p.id = ?", POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE);
+    let post_query = format!(
+        "{}{} WHERE p.id = ?",
+        POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE
+    );
     let post = sqlx::query_as::<_, Post>(&post_query)
         .bind(post_id)
         .fetch_one(&pool)
@@ -365,6 +424,8 @@ async fn create_post(
             file_name: post.file_name,
             author_id: post.author_id,
             author: UserResponse::from(current_user),
+            is_published: post.is_published,
+            published_at: post.published_at,
             view_count: post.view_count,
             like_count: post.like_count,
             user_liked: Some(false),
@@ -387,7 +448,10 @@ async fn update_post(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let current_user = extract_current_user(&pool, &headers).await?;
 
-    let post_query = format!("{}{} WHERE p.id = ?", POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE);
+    let post_query = format!(
+        "{}{} WHERE p.id = ?",
+        POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE
+    );
     let post = sqlx::query_as::<_, Post>(&post_query)
         .bind(post_id)
         .fetch_optional(&pool)
@@ -506,13 +570,17 @@ async fn update_post(
     };
 
     let now = Utc::now();
+    let is_published = category_code != PAPER_CATEGORY;
+    let published_at = if is_published { Some(now) } else { None };
     sqlx::query(
-        "UPDATE posts SET title = ?, content = ?, summary = ?, category_id = ?, updated_at = ? WHERE id = ?",
+        "UPDATE posts SET title = ?, content = ?, summary = ?, category_id = ?, is_published = ?, published_at = ?, updated_at = ? WHERE id = ?",
     )
     .bind(&title)
     .bind(&content)
     .bind(&summary)
     .bind(category_id)
+    .bind(is_published)
+    .bind(published_at)
     .bind(now)
     .bind(post_id)
     .execute(&pool)
@@ -570,6 +638,14 @@ async fn update_post(
             prepare_auto_citations_for_content(&pool, &category_code, &content, Some(post_id))
                 .await?;
         replace_post_auto_citations(&pool, post_id, &auto_citation_ids).await?;
+
+        if let Err(error) = schedule_review(&pool, post_id, ReviewTrigger::AutoUpdate).await {
+            tracing::error!(
+                "Failed to schedule auto AI review on update for post {}: {}",
+                post_id,
+                error
+            );
+        }
     }
 
     let updated_post = sqlx::query_as::<_, Post>(&post_query)
@@ -595,6 +671,8 @@ async fn update_post(
         file_name: updated_post.file_name,
         author_id: updated_post.author_id,
         author: UserResponse::from(current_user),
+        is_published: updated_post.is_published,
+        published_at: updated_post.published_at,
         view_count: updated_post.view_count,
         like_count: updated_post.like_count,
         user_liked: Some(user_liked),
@@ -615,7 +693,10 @@ async fn delete_post(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let current_user = extract_current_user(&pool, &headers).await?;
 
-    let post_query = format!("{}{} WHERE p.id = ?", POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE);
+    let post_query = format!(
+        "{}{} WHERE p.id = ?",
+        POST_SELECT_COLUMNS, POST_SELECT_FROM_CLAUSE
+    );
     let post = sqlx::query_as::<_, Post>(&post_query)
         .bind(post_id)
         .fetch_optional(&pool)
@@ -659,7 +740,8 @@ async fn like_post(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let current_user = extract_current_user(&pool, &headers).await?;
 
-    let _post = sqlx::query("SELECT id FROM posts WHERE id = ?")
+    let post_row =
+        sqlx::query_as::<_, (bool,)>("SELECT is_published FROM posts WHERE id = ?")
         .bind(post_id)
         .fetch_optional(&pool)
         .await
@@ -670,6 +752,13 @@ async fn like_post(
                 Json(serde_json::json!({"detail": "Post not found"})),
             )
         })?;
+    let (is_published,) = post_row;
+    if !is_published {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"detail": "Post not found"})),
+        ));
+    }
 
     let existing = sqlx::query("SELECT id FROM post_likes WHERE user_id = ? AND post_id = ?")
         .bind(current_user.id)
@@ -710,12 +799,12 @@ async fn like_post(
         ON DUPLICATE KEY UPDATE like_count = VALUES(like_count), updated_at = VALUES(updated_at)
         "#,
     )
-        .bind(post_id)
-        .bind(new_count)
-        .bind(Utc::now())
-        .execute(&pool)
-        .await
-        .map_err(internal_error)?;
+    .bind(post_id)
+    .bind(new_count)
+    .bind(Utc::now())
+    .execute(&pool)
+    .await
+    .map_err(internal_error)?;
 
     Ok(Json(serde_json::json!({
         "message": if user_liked { "Post liked" } else { "Post unliked" },
@@ -724,18 +813,20 @@ async fn like_post(
     })))
 }
 
-fn push_post_filters(query_builder: &mut QueryBuilder<MySql>, query: &PostQuery) {
-    let mut has_where = false;
-
+fn push_post_filters(
+    query_builder: &mut QueryBuilder<MySql>,
+    query: &PostQuery,
+    has_where: &mut bool,
+) {
     if let Some(category) = query.category.as_ref() {
-        push_condition(query_builder, &mut has_where);
+        push_condition(query_builder, has_where);
         query_builder.push("c.code = ");
         query_builder.push_bind(category.clone());
     }
 
     if let Some(search) = query.search.as_ref() {
         let search_pattern = format!("%{}%", search);
-        push_condition(query_builder, &mut has_where);
+        push_condition(query_builder, has_where);
         query_builder.push("(p.title LIKE ");
         query_builder.push_bind(search_pattern.clone());
         query_builder.push(" OR p.content LIKE ");
@@ -744,13 +835,26 @@ fn push_post_filters(query_builder: &mut QueryBuilder<MySql>, query: &PostQuery)
     }
 
     if let Some(tag) = query.tag.as_ref() {
-        push_condition(query_builder, &mut has_where);
+        push_condition(query_builder, has_where);
         query_builder.push(
             "EXISTS (SELECT 1 FROM post_tags pt JOIN tags t ON t.id = pt.tag_id WHERE pt.post_id = p.id AND t.name = ",
         );
         query_builder.push_bind(tag.clone());
         query_builder.push(")");
     }
+}
+
+fn push_visibility_filter(
+    query_builder: &mut QueryBuilder<MySql>,
+    has_where: &mut bool,
+) {
+    push_condition(query_builder, has_where);
+    query_builder.push("p.is_published = TRUE");
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PostDetailQuery {
+    source: Option<String>,
 }
 
 fn push_condition(query_builder: &mut QueryBuilder<MySql>, has_where: &mut bool) {
@@ -801,7 +905,11 @@ fn validate_upload_file(
     Ok(())
 }
 
-async fn fetch_user_liked(pool: &MySqlPool, user_id: i64, post_id: i64) -> Result<bool, sqlx::Error> {
+async fn fetch_user_liked(
+    pool: &MySqlPool,
+    user_id: i64,
+    post_id: i64,
+) -> Result<bool, sqlx::Error> {
     let liked = sqlx::query("SELECT 1 FROM post_likes WHERE user_id = ? AND post_id = ?")
         .bind(user_id)
         .bind(post_id)
@@ -835,7 +943,10 @@ async fn fetch_authors_map(
     }
     query_builder.push(")");
 
-    let users = query_builder.build_query_as::<User>().fetch_all(pool).await?;
+    let users = query_builder
+        .build_query_as::<User>()
+        .fetch_all(pool)
+        .await?;
 
     Ok(users
         .into_iter()
@@ -843,7 +954,10 @@ async fn fetch_authors_map(
         .collect())
 }
 
-async fn fetch_tags_map(pool: &MySqlPool, posts: &[Post]) -> Result<HashMap<i64, Vec<String>>, sqlx::Error> {
+async fn fetch_tags_map(
+    pool: &MySqlPool,
+    posts: &[Post],
+) -> Result<HashMap<i64, Vec<String>>, sqlx::Error> {
     let post_ids: Vec<i64> = posts.iter().map(|post| post.id).collect();
 
     if post_ids.is_empty() {
@@ -901,20 +1015,20 @@ async fn process_tags(
     let mut final_tags = Vec::new();
 
     for tag in tags {
-        let tag_id: i64 =
-            if let Some(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tags WHERE name = ?")
+        let tag_id: i64 = if let Some(row) =
+            sqlx::query_as::<_, (i64,)>("SELECT id FROM tags WHERE name = ?")
                 .bind(&tag)
                 .fetch_optional(pool)
                 .await?
-            {
-                row.0
-            } else {
-                let res = sqlx::query("INSERT INTO tags (name) VALUES (?)")
-                    .bind(&tag)
-                    .execute(pool)
-                    .await?;
-                res.last_insert_id() as i64
-            };
+        {
+            row.0
+        } else {
+            let res = sqlx::query("INSERT INTO tags (name) VALUES (?)")
+                .bind(&tag)
+                .execute(pool)
+                .await?;
+            res.last_insert_id() as i64
+        };
 
         let _ = sqlx::query("INSERT IGNORE INTO post_tags (post_id, tag_id) VALUES (?, ?)")
             .bind(post_id)
@@ -1136,8 +1250,7 @@ fn normalize_category_code(raw: &str) -> String {
 }
 
 fn category_display_name(code: &str) -> String {
-    code
-        .split('_')
+    code.split('_')
         .filter(|segment| !segment.is_empty())
         .map(|segment| {
             let mut chars = segment.chars();
@@ -1161,24 +1274,24 @@ async fn resolve_or_create_category(
 ) -> Result<(i64, String), (StatusCode, Json<serde_json::Value>)> {
     let code = normalize_category_code(raw_category);
 
-    if let Some((id, existing_code)) =
-        sqlx::query_as::<_, (i64, String)>(
-            "SELECT CAST(id AS SIGNED) AS id, code FROM post_categories WHERE code = ?",
-        )
-            .bind(&code)
-            .fetch_optional(pool)
-            .await
-            .map_err(internal_error)?
+    if let Some((id, existing_code)) = sqlx::query_as::<_, (i64, String)>(
+        "SELECT CAST(id AS SIGNED) AS id, code FROM post_categories WHERE code = ?",
+    )
+    .bind(&code)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal_error)?
     {
         return Ok((id, existing_code));
     }
 
     let display_name = category_display_name(&code);
-    let insert_result = sqlx::query("INSERT INTO post_categories (code, display_name) VALUES (?, ?)")
-        .bind(&code)
-        .bind(&display_name)
-        .execute(pool)
-        .await;
+    let insert_result =
+        sqlx::query("INSERT INTO post_categories (code, display_name) VALUES (?, ?)")
+            .bind(&code)
+            .bind(&display_name)
+            .execute(pool)
+            .await;
 
     if let Err(error) = insert_result {
         match &error {

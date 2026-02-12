@@ -54,6 +54,10 @@ function EditPost() {
                 }
             } catch (err) {
                 console.error('Failed to fetch post:', err);
+                if (err.response?.status === 404) {
+                    navigate('/reviews');
+                    return;
+                }
                 setError('글을 불러오는데 실패했습니다.');
             } finally {
                 setLoading(false);
@@ -148,7 +152,7 @@ function EditPost() {
                 file: file || undefined,
                 removeFile: removeFile,
             });
-            navigate(`/posts/${id}`);
+            navigate(category === 'paper' ? '/reviews' : `/posts/${id}`);
         } catch (err) {
             console.error('Failed to update post:', err);
             if (err.response?.status === 401) {

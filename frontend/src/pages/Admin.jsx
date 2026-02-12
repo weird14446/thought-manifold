@@ -14,7 +14,11 @@ function Admin() {
     const [error, setError] = useState(null);
     const [contentLoading, setContentLoading] = useState(true);
     const [contentError, setContentError] = useState(null);
-    const [activeTab, setActiveTab] = useState('overview'); // overview, users, content
+    const [reviewItems, setReviewItems] = useState([]);
+    const [reviewsLoading, setReviewsLoading] = useState(true);
+    const [reviewsError, setReviewsError] = useState(null);
+    const [reviewStatusFilter, setReviewStatusFilter] = useState('');
+    const [activeTab, setActiveTab] = useState('overview'); // overview, users, content, reviews
 
     useEffect(() => {
         if (!user || !user.is_admin) {
@@ -24,6 +28,7 @@ function Admin() {
 
         fetchData();
         fetchManagedPosts();
+        fetchAiReviews();
     }, [user, navigate]);
 
     const fetchData = async () => {
@@ -55,6 +60,24 @@ function Admin() {
             setContentError('게시글 목록을 불러오는데 실패했습니다.');
         } finally {
             setContentLoading(false);
+        }
+    };
+
+    const fetchAiReviews = async (statusFilter = reviewStatusFilter) => {
+        try {
+            setReviewsLoading(true);
+            const params = { page: 1, per_page: 50 };
+            if (statusFilter) {
+                params.status = statusFilter;
+            }
+            const data = await adminAPI.getAiReviews(params);
+            setReviewItems(data.reviews || []);
+            setReviewsError(null);
+        } catch (err) {
+            console.error('Failed to fetch AI reviews for admin:', err);
+            setReviewsError('AI 심사 목록을 불러오는데 실패했습니다.');
+        } finally {
+            setReviewsLoading(false);
         }
     };
 
@@ -123,6 +146,12 @@ function Admin() {
                         >
                             콘텐츠 관리
                         </button>
+                        <button
+                            className={`admin-tab ${activeTab === 'reviews' ? 'active' : ''}`}
+                            onClick={() => setActiveTab('reviews')}
+                        >
+                            AI 심사
+                        </button>
                     </div>
                 </div>
 
@@ -154,6 +183,20 @@ function Admin() {
                                 {typeof stats.journal_metrics?.impact_factor === 'number'
                                     ? stats.journal_metrics.impact_factor.toFixed(3)
                                     : '-'}
+                            </div>
+                        </div>
+                        <div className="admin-stat-card">
+                            <h3>AI 심사 총건수</h3>
+                            <div className="stat-value">{stats.ai_review_metrics?.total_reviews ?? 0}</div>
+                        </div>
+                        <div className="admin-stat-card">
+                            <h3>AI 심사 대기/완료/실패</h3>
+                            <div className="stat-value" style={{ fontSize: '1.2rem' }}>
+                                {stats.ai_review_metrics?.pending_reviews ?? 0}
+                                {' / '}
+                                {stats.ai_review_metrics?.completed_reviews ?? 0}
+                                {' / '}
+                                {stats.ai_review_metrics?.failed_reviews ?? 0}
                             </div>
                         </div>
                     </div>
@@ -274,6 +317,83 @@ function Admin() {
                                                     🗑️
                                                 </button>
                                             </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                )}
+
+                {activeTab === 'reviews' && (
+                    <div className="admin-table-container">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', gap: '0.75rem', flexWrap: 'wrap' }}>
+                            <div>
+                                <label htmlFor="review-status-filter" style={{ marginRight: '0.5rem', fontSize: '0.9rem' }}>상태 필터</label>
+                                <select
+                                    id="review-status-filter"
+                                    value={reviewStatusFilter}
+                                    onChange={(e) => {
+                                        const next = e.target.value;
+                                        setReviewStatusFilter(next);
+                                        fetchAiReviews(next);
+                                    }}
+                                    className="form-input"
+                                    style={{ minWidth: '180px', height: '2.25rem' }}
+                                >
+                                    <option value="">전체</option>
+                                    <option value="pending">pending</option>
+                                    <option value="completed">completed</option>
+                                    <option value="failed">failed</option>
+                                </select>
+                            </div>
+                            <button className="btn btn-secondary btn-sm" onClick={() => fetchAiReviews()}>
+                                새로고침
+                            </button>
+                        </div>
+
+                        {reviewsError ? (
+                            <div className="empty-state">
+                                <div className="empty-state-icon">⚠️</div>
+                                <h3>AI 심사 목록 로드 실패</h3>
+                                <p>{reviewsError}</p>
+                                <button className="btn btn-primary" onClick={() => fetchAiReviews()}>다시 시도</button>
+                            </div>
+                        ) : reviewsLoading ? (
+                            <div className="container" style={{ padding: '2rem' }}>Loading reviews...</div>
+                        ) : reviewItems.length === 0 ? (
+                            <div className="empty-state">
+                                <div className="empty-state-icon">📭</div>
+                                <h3>AI 심사 이력이 없습니다</h3>
+                                <p>선택한 조건에 맞는 심사 결과가 없습니다.</p>
+                            </div>
+                        ) : (
+                            <table className="admin-table">
+                                <thead>
+                                    <tr>
+                                        <th>Review ID</th>
+                                        <th>Post ID</th>
+                                        <th>상태</th>
+                                        <th>판정</th>
+                                        <th>모델</th>
+                                        <th>총점</th>
+                                        <th>트리거</th>
+                                        <th>생성시각</th>
+                                        <th>오류</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {reviewItems.map((item) => (
+                                        <tr key={item.id}>
+                                            <td>{item.id}</td>
+                                            <td><Link to={`/posts/${item.post_id}`}>{item.post_id}</Link></td>
+                                            <td>{item.status}</td>
+                                            <td>{item.decision || '-'}</td>
+                                            <td>{item.model || '-'}</td>
+                                            <td>{item.scores?.overall_score ?? '-'}</td>
+                                            <td>{item.trigger}</td>
+                                            <td>{new Date(item.created_at).toLocaleString()}</td>
+                                            <td style={{ maxWidth: '240px' }}>{item.error_message || '-'}</td>
                                         </tr>
                                     ))}
                                 </tbody>

@@ -1,13 +1,13 @@
 use axum::{
+    Router,
     extract::{Json, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use chrono::{DateTime, Utc};
-use sqlx::MySqlPool;
 use sqlx::FromRow;
+use sqlx::MySqlPool;
 
 use crate::models::{Comment, CommentResponse, CreateComment, User, UserResponse};
 use crate::routes::auth::extract_current_user;
@@ -46,6 +46,8 @@ async fn list_comments(
     State(pool): State<MySqlPool>,
     Path(post_id): Path<i64>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    ensure_post_visibility(&pool, post_id).await?;
+
     let rows = sqlx::query_as::<_, CommentWithAuthorRow>(
         r#"
         SELECT
@@ -118,6 +120,7 @@ async fn create_comment(
     Json(input): Json<CreateComment>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let current_user = extract_current_user(&pool, &headers).await?;
+    ensure_post_visibility(&pool, post_id).await?;
 
     if input.content.trim().is_empty() {
         return Err((
@@ -125,24 +128,6 @@ async fn create_comment(
             Json(serde_json::json!({"detail": "Comment content is required"})),
         ));
     }
-
-    // Verify post exists
-    let _post = sqlx::query("SELECT id FROM posts WHERE id = ?")
-        .bind(post_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"detail": e.to_string()})),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"detail": "Post not found"})),
-            )
-        })?;
 
     let now = Utc::now();
     let result = sqlx::query(
@@ -233,4 +218,37 @@ async fn delete_comment(
     Ok(Json(
         serde_json::json!({"message": "Comment deleted successfully"}),
     ))
+}
+
+async fn ensure_post_visibility(
+    pool: &MySqlPool,
+    post_id: i64,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let post_row =
+        sqlx::query_as::<_, (bool,)>("SELECT is_published FROM posts WHERE id = ?")
+        .bind(post_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"detail": "Post not found"})),
+            )
+        })?;
+
+    let (is_published,) = post_row;
+    if !is_published {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"detail": "Post not found"})),
+        ));
+    }
+
+    Ok(())
 }

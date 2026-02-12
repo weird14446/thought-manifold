@@ -49,8 +49,8 @@ export const postsAPI = {
         const response = await api.get('/posts', { params });
         return response.data;
     },
-    getPost: async (id) => {
-        const response = await api.get(`/posts/${id}`);
+    getPost: async (id, params = {}) => {
+        const response = await api.get(`/posts/${id}`, { params });
         return response.data;
     },
     createPost: async (postData) => {
@@ -160,6 +160,33 @@ export const adminAPI = {
     },
     deleteComment: async (commentId) => {
         const response = await api.delete(`/admin/comments/${commentId}`);
+        return response.data;
+    },
+    getAiReviews: async (params = {}) => {
+        const response = await api.get('/admin/reviews', { params });
+        return response.data;
+    },
+};
+
+export const reviewsAPI = {
+    getMine: async (page = 1, perPage = 20) => {
+        const response = await api.get('/reviews/mine', {
+            params: { page, per_page: perPage },
+        });
+        return response.data;
+    },
+    getLatest: async (postId) => {
+        const response = await api.get(`/posts/${postId}/reviews/latest`);
+        return response.data;
+    },
+    getHistory: async (postId, limit = 20, offset = 0) => {
+        const response = await api.get(`/posts/${postId}/reviews`, {
+            params: { limit, offset },
+        });
+        return response.data;
+    },
+    rerun: async (postId) => {
+        const response = await api.post(`/posts/${postId}/reviews/rerun`);
         return response.data;
     },
 };

@@ -1,9 +1,9 @@
 use axum::{
+    Json, Router,
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
-    Json, Router,
 };
 use chrono::{Datelike, Utc};
 use serde::Deserialize;
@@ -33,7 +33,9 @@ async fn get_journal_metrics(
         ));
     }
 
-    let metrics = compute_impact_factor(&pool, year).await.map_err(internal_error)?;
+    let metrics = compute_impact_factor(&pool, year)
+        .await
+        .map_err(internal_error)?;
     Ok(Json(metrics))
 }
 
