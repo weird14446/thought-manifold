@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { Header, Footer } from './components';
 import { Home, Upload, Login, PostDetail, EditPost, Profile, Admin, ReviewCenter, StaticInfoPage, AboutPage, GuidelinesPage } from './pages';
+import 'katex/dist/katex.min.css';
 import './index.css';
 
 function App() {

@@ -1,4 +1,6 @@
 import { Link } from 'react-router-dom';
+import { getPostExcerptMarkdown } from '../utils/markdown';
+import MarkdownRenderer from './MarkdownRenderer';
 
 const categoryLabels = {
     essay: '에세이',
@@ -16,6 +18,7 @@ function PostCard({ post }) {
         month: 'short',
         day: 'numeric',
     });
+    const excerptMarkdown = getPostExcerptMarkdown(post);
 
     return (
         <Link to={`/posts/${post.id}`} className="post-card">
@@ -34,9 +37,9 @@ function PostCard({ post }) {
 
             <div className="post-card-body">
                 <h3 className="post-title">{post.title}</h3>
-                <p className="post-excerpt">
-                    {post.summary || post.content.slice(0, 150) + '...'}
-                </p>
+                <div className="post-excerpt">
+                    <MarkdownRenderer content={excerptMarkdown} className="markdown-card-excerpt" />
+                </div>
                 {post.tags && post.tags.length > 0 && (
                     <div className="post-card-tags">
                         {post.tags.map(tag => (

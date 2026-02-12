@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { usersAPI } from '../api';
 import { useAuth } from '../context/AuthContext';
+import { MarkdownRenderer } from '../components';
+import { getPostExcerptMarkdown } from '../utils/markdown';
 
 const categoryLabels = {
     essay: '에세이',
@@ -271,9 +273,12 @@ function Profile() {
                                             {categoryEmojis[post.category] || '📁'} {categoryLabels[post.category] || post.category}
                                         </div>
                                         <h3 className="profile-post-title">{post.title}</h3>
-                                        {post.summary && (
-                                            <p className="profile-post-summary">{post.summary}</p>
-                                        )}
+                                        <div className="profile-post-summary">
+                                            <MarkdownRenderer
+                                                content={getPostExcerptMarkdown(post)}
+                                                className="markdown-profile-excerpt"
+                                            />
+                                        </div>
                                         <div className="profile-post-meta">
                                             <span>❤️ {post.like_count}</span>
                                             <span>👁️ {post.view_count}</span>

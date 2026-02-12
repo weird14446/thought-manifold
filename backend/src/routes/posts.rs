@@ -6,6 +6,7 @@ use axum::{
     routing::{get, post},
 };
 use chrono::Utc;
+use reqwest::Url;
 use serde::Deserialize;
 use sqlx::{MySql, MySqlPool, QueryBuilder};
 use std::{
@@ -39,6 +40,7 @@ const POST_SELECT_COLUMNS: &str = r#"
         p.title,
         p.content,
         p.summary,
+        p.github_url,
         c.code AS category,
         pf.file_path,
         pf.file_name,
@@ -134,6 +136,7 @@ async fn list_posts(
             title: post.title,
             content: post.content,
             summary: post.summary,
+            github_url: post.github_url,
             category: post.category,
             file_path: post.file_path,
             file_name: post.file_name,
@@ -238,6 +241,7 @@ async fn get_post(
         title: post.title,
         content: post.content,
         summary: post.summary,
+        github_url: post.github_url,
         category: post.category,
         file_path: post.file_path,
         file_name: post.file_name,
@@ -269,6 +273,7 @@ async fn create_post(
     let mut title = String::new();
     let mut content = String::new();
     let mut summary: Option<String> = None;
+    let mut github_url: Option<String> = None;
     let mut category = "other".to_string();
     let mut file_path: Option<String> = None;
     let mut file_name: Option<String> = None;
@@ -288,6 +293,10 @@ async fn create_post(
             }
             "summary" => {
                 summary = Some(field.text().await.map_err(multipart_error)?);
+            }
+            "github_url" => {
+                let value = field.text().await.map_err(multipart_error)?;
+                github_url = validate_github_url(&value)?;
             }
             "category" => {
                 category = field.text().await.map_err(multipart_error)?;
@@ -350,12 +359,13 @@ async fn create_post(
     let is_published = paper_status == PAPER_STATUS_PUBLISHED;
     let published_at = if is_published { Some(now) } else { None };
     let result = sqlx::query(
-        r#"INSERT INTO posts (title, content, summary, category_id, author_id, is_published, published_at, paper_status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        r#"INSERT INTO posts (title, content, summary, github_url, category_id, author_id, is_published, published_at, paper_status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(&title)
     .bind(&content)
     .bind(&summary)
+    .bind(&github_url)
     .bind(category_id)
     .bind(current_user.id)
     .bind(is_published)
@@ -431,6 +441,7 @@ async fn create_post(
             title: post.title,
             content: post.content,
             summary: post.summary,
+            github_url: post.github_url,
             category: post.category,
             file_path: post.file_path,
             file_name: post.file_name,
@@ -487,6 +498,7 @@ async fn update_post(
     let mut title = post.title.clone();
     let mut content = post.content.clone();
     let mut summary = post.summary.clone();
+    let mut github_url = post.github_url.clone();
     let mut category = post.category.clone();
     let mut file_path = post.file_path.clone();
     let mut file_name = post.file_name.clone();
@@ -515,6 +527,10 @@ async fn update_post(
             }
             "summary" => {
                 summary = Some(field.text().await.map_err(multipart_error)?);
+            }
+            "github_url" => {
+                let value = field.text().await.map_err(multipart_error)?;
+                github_url = validate_github_url(&value)?;
             }
             "category" => {
                 let val = field.text().await.map_err(multipart_error)?;
@@ -595,11 +611,12 @@ async fn update_post(
     let is_published = paper_status == PAPER_STATUS_PUBLISHED;
     let published_at = if is_published { Some(now) } else { None };
     sqlx::query(
-        "UPDATE posts SET title = ?, content = ?, summary = ?, category_id = ?, is_published = ?, published_at = ?, paper_status = ?, updated_at = ? WHERE id = ?",
+        "UPDATE posts SET title = ?, content = ?, summary = ?, github_url = ?, category_id = ?, is_published = ?, published_at = ?, paper_status = ?, updated_at = ? WHERE id = ?",
     )
     .bind(&title)
     .bind(&content)
     .bind(&summary)
+    .bind(&github_url)
     .bind(category_id)
     .bind(is_published)
     .bind(published_at)
@@ -691,6 +708,7 @@ async fn update_post(
         title: updated_post.title,
         content: updated_post.content,
         summary: updated_post.summary,
+        github_url: updated_post.github_url,
         category: updated_post.category,
         file_path: updated_post.file_path,
         file_name: updated_post.file_name,
@@ -1052,6 +1070,49 @@ fn resolve_update_paper_status(
             })),
         )),
     }
+}
+
+fn validate_github_url(raw: &str) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let parsed = Url::parse(trimmed).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "detail": "github_url must be a valid URL"
+            })),
+        )
+    })?;
+
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "detail": "github_url must use http or https"
+            })),
+        ));
+    }
+
+    let host = parsed
+        .host_str()
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    let is_github_host =
+        host == "github.com" || host == "www.github.com" || host.ends_with(".github.com");
+
+    if !is_github_host {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "detail": "github_url must point to github.com"
+            })),
+        ));
+    }
+
+    Ok(Some(parsed.to_string()))
 }
 
 fn normalized_extension(filename: &str) -> Option<String> {

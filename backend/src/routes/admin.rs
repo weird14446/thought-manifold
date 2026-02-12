@@ -13,6 +13,7 @@ use crate::ai_review::{fetch_admin_reviews, fetch_ai_review_metrics, parse_statu
 use crate::metrics::compute_impact_factor;
 use crate::models::{User, UserResponse};
 use crate::routes::auth::extract_current_user;
+use crate::routes::comments::{apply_comment_delete_policy, find_comment_target};
 
 // ============================
 // Helper: Extract Admin User
@@ -468,9 +469,22 @@ async fn admin_delete_comment(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let _admin = extract_admin_user(&pool, &headers).await?;
 
-    let result = sqlx::query("DELETE FROM comments WHERE id = ?")
-        .bind(comment_id)
-        .execute(&pool)
+    let comment = find_comment_target(&pool, comment_id, None)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"detail": "Comment not found"})),
+            )
+        })?;
+
+    let delete_mode = apply_comment_delete_policy(&pool, &comment)
         .await
         .map_err(|e| {
             (
@@ -479,12 +493,8 @@ async fn admin_delete_comment(
             )
         })?;
 
-    if result.rows_affected() == 0 {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"detail": "Comment not found"})),
-        ));
-    }
-
-    Ok(Json(serde_json::json!({"detail": "Comment deleted"})))
+    Ok(Json(serde_json::json!({
+        "detail": "Comment deleted",
+        "delete_mode": delete_mode.as_str()
+    })))
 }

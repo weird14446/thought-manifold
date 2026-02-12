@@ -58,6 +58,7 @@ export const postsAPI = {
         formData.append('title', postData.title);
         formData.append('content', postData.content);
         if (postData.summary) formData.append('summary', postData.summary);
+        if (postData.github_url?.trim()) formData.append('github_url', postData.github_url.trim());
         formData.append('category', postData.category || 'other');
         if (postData.paper_status) formData.append('paper_status', postData.paper_status);
         if (postData.tags?.trim()) formData.append('tags', postData.tags.trim());
@@ -82,6 +83,9 @@ export const postsAPI = {
         formData.append('title', postData.title);
         formData.append('content', postData.content);
         if (postData.summary !== undefined) formData.append('summary', postData.summary || '');
+        if (postData.github_url !== undefined) {
+            formData.append('github_url', (postData.github_url || '').trim());
+        }
         formData.append('category', postData.category || 'other');
         if (postData.paper_status) formData.append('paper_status', postData.paper_status);
         if (postData.tags?.trim()) formData.append('tags', postData.tags.trim());
@@ -132,8 +136,12 @@ export const commentsAPI = {
         const response = await api.get(`/posts/${postId}/comments`);
         return response.data;
     },
-    create: async (postId, content) => {
-        const response = await api.post(`/posts/${postId}/comments`, { content });
+    create: async (postId, content, parentCommentId = null) => {
+        const payload = { content };
+        if (parentCommentId !== null && parentCommentId !== undefined) {
+            payload.parent_comment_id = parentCommentId;
+        }
+        const response = await api.post(`/posts/${postId}/comments`, payload);
         return response.data;
     },
     delete: async (postId, commentId) => {

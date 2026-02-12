@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link, useLocation } from 'react-router-dom';
 import { postsAPI } from '../api';
 import { useAuth } from '../context/AuthContext';
+import { MarkdownEditorPreview } from '../components';
 
 const categories = [
     { key: 'essay', label: '에세이', icon: '📝', desc: '자유로운 형식의 글' },
@@ -21,6 +22,7 @@ function EditPost() {
     const [title, setTitle] = useState('');
     const [content, setContent] = useState('');
     const [summary, setSummary] = useState('');
+    const [githubUrl, setGithubUrl] = useState('');
     const [category, setCategory] = useState('essay');
     const [tags, setTags] = useState('');
     const [citations, setCitations] = useState('');
@@ -55,6 +57,7 @@ function EditPost() {
                 setTitle(data.title);
                 setContent(data.content);
                 setSummary(data.summary || '');
+                setGithubUrl(data.github_url || '');
                 setCategory(data.category);
                 setPaperWorkflow(data.paper_status === 'draft' ? 'draft' : 'submitted');
                 if (data.tags) {
@@ -159,6 +162,7 @@ function EditPost() {
                 title: title.trim(),
                 content: content.trim(),
                 summary: summary.trim() || '',
+                github_url: githubUrl.trim() || '',
                 category,
                 paper_status: category === 'paper' ? paperWorkflow : undefined,
                 tags: tags.trim() || undefined,
@@ -265,6 +269,22 @@ function EditPost() {
                         />
                     </div>
 
+                    <div className="form-group">
+                        <label className="form-label" htmlFor="github-url">
+                            GitHub 주소 <span className="optional">(선택)</span>
+                        </label>
+                        <input
+                            id="github-url"
+                            type="url"
+                            className="form-input"
+                            placeholder="https://github.com/owner/repository"
+                            value={githubUrl}
+                            onChange={(e) => setGithubUrl(e.target.value)}
+                            maxLength={2048}
+                        />
+                        <span className="form-hint">비워두고 저장하면 GitHub 주소가 제거됩니다.</span>
+                    </div>
+
                     {/* Tags */}
                     <div className="form-group">
                         <label className="form-label" htmlFor="tags">
@@ -324,14 +344,16 @@ function EditPost() {
                         <label className="form-label" htmlFor="content">
                             내용 <span className="required">*</span>
                         </label>
-                        <textarea
-                            id="content"
-                            className="form-textarea"
-                            placeholder="학습한 내용을 자유롭게 작성하세요..."
+                        <MarkdownEditorPreview
+                            inputId="content"
                             value={content}
-                            onChange={(e) => setContent(e.target.value)}
+                            onChange={setContent}
+                            placeholder="학습한 내용을 자유롭게 작성하세요..."
                             rows={16}
+                            previewClassName="markdown-post markdown-preview"
+                            emptyText="입력한 Markdown과 수식이 여기에 렌더링됩니다."
                         />
+                        <span className="form-hint">수식은 `$...$`(inline), `$$...$$`(block) 문법을 사용할 수 있습니다.</span>
                     </div>
 
                     {/* File Upload */}

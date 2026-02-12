@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS posts (
   title VARCHAR(255) NOT NULL,
   content LONGTEXT NOT NULL,
   summary TEXT NULL,
+  github_url VARCHAR(2048) NULL,
   category_id SMALLINT UNSIGNED NOT NULL,
   author_id BIGINT NOT NULL,
   is_published BOOLEAN NOT NULL DEFAULT TRUE,
@@ -86,13 +87,18 @@ CREATE TABLE IF NOT EXISTS comments (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   post_id BIGINT NOT NULL,
   author_id BIGINT NOT NULL,
+  parent_comment_id BIGINT NULL,
   content TEXT NOT NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  deleted_at DATETIME(6) NULL,
   created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   updated_at DATETIME(6) NULL,
   INDEX idx_comments_post_id_created_at (post_id, created_at),
+  INDEX idx_comments_post_parent_created (post_id, parent_comment_id, created_at),
   INDEX idx_comments_author_id (author_id),
   CONSTRAINT fk_comments_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
-  CONSTRAINT fk_comments_author_id FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+  CONSTRAINT fk_comments_author_id FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_comments_parent_comment_id FOREIGN KEY (parent_comment_id) REFERENCES comments(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS tags (

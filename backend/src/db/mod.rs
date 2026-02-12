@@ -45,6 +45,7 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
             title VARCHAR(255) NOT NULL,
             content LONGTEXT NOT NULL,
             summary TEXT NULL,
+            github_url VARCHAR(2048) NULL,
             category_id SMALLINT UNSIGNED NOT NULL,
             author_id BIGINT NOT NULL,
             is_published BOOLEAN NOT NULL DEFAULT TRUE,
@@ -73,6 +74,7 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
         "VARCHAR(32) NOT NULL DEFAULT 'published'",
     )
     .await?;
+    ensure_posts_column(&pool, "github_url", "VARCHAR(2048) NULL").await?;
 
     sqlx::query(
         r#"
@@ -126,18 +128,39 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             post_id BIGINT NOT NULL,
             author_id BIGINT NOT NULL,
+            parent_comment_id BIGINT NULL,
             content TEXT NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at DATETIME(6) NULL,
             created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
             updated_at DATETIME(6) NULL,
             INDEX idx_comments_post_id_created_at (post_id, created_at),
+            INDEX idx_comments_post_parent_created (post_id, parent_comment_id, created_at),
             INDEX idx_comments_author_id (author_id),
             CONSTRAINT fk_comments_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
-            CONSTRAINT fk_comments_author_id FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+            CONSTRAINT fk_comments_author_id FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE,
+            CONSTRAINT fk_comments_parent_comment_id FOREIGN KEY (parent_comment_id) REFERENCES comments(id) ON DELETE SET NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         "#,
     )
     .execute(&pool)
     .await?;
+
+    ensure_comments_column(&pool, "parent_comment_id", "BIGINT NULL").await?;
+    ensure_comments_column(&pool, "is_deleted", "BOOLEAN NOT NULL DEFAULT FALSE").await?;
+    ensure_comments_column(&pool, "deleted_at", "DATETIME(6) NULL").await?;
+    ensure_comments_index(
+        &pool,
+        "idx_comments_post_parent_created",
+        "post_id, parent_comment_id, created_at",
+    )
+    .await?;
+    if let Err(error) = ensure_comments_parent_fk(&pool).await {
+        tracing::warn!(
+            "Failed to enforce comments parent FK (continuing with app-level validation): {}",
+            error
+        );
+    }
 
     sqlx::query(
         r#"
@@ -499,6 +522,88 @@ async fn ensure_posts_paper_status_check(pool: &MySqlPool) -> Result<(), sqlx::E
     if existing_count == 0 {
         sqlx::query(
             "ALTER TABLE posts ADD CONSTRAINT chk_posts_paper_status CHECK (paper_status IN ('draft', 'submitted', 'revision', 'accepted', 'published', 'rejected'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_comments_column(
+    pool: &MySqlPool,
+    column_name: &str,
+    column_definition: &str,
+) -> Result<(), sqlx::Error> {
+    let (existing_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'comments'
+          AND column_name = ?
+        "#,
+    )
+    .bind(column_name)
+    .fetch_one(pool)
+    .await?;
+
+    if existing_count == 0 {
+        let alter_sql = format!(
+            "ALTER TABLE comments ADD COLUMN {} {}",
+            column_name, column_definition
+        );
+        sqlx::query(&alter_sql).execute(pool).await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_comments_index(
+    pool: &MySqlPool,
+    index_name: &str,
+    index_columns: &str,
+) -> Result<(), sqlx::Error> {
+    let (existing_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = 'comments'
+          AND index_name = ?
+        "#,
+    )
+    .bind(index_name)
+    .fetch_one(pool)
+    .await?;
+
+    if existing_count == 0 {
+        let create_sql = format!(
+            "CREATE INDEX {} ON comments ({})",
+            index_name, index_columns
+        );
+        sqlx::query(&create_sql).execute(pool).await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_comments_parent_fk(pool: &MySqlPool) -> Result<(), sqlx::Error> {
+    let (existing_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM information_schema.table_constraints
+        WHERE table_schema = DATABASE()
+          AND table_name = 'comments'
+          AND constraint_name = 'fk_comments_parent_comment_id'
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if existing_count == 0 {
+        sqlx::query(
+            "ALTER TABLE comments ADD CONSTRAINT fk_comments_parent_comment_id FOREIGN KEY (parent_comment_id) REFERENCES comments(id) ON DELETE SET NULL",
         )
         .execute(pool)
         .await?;

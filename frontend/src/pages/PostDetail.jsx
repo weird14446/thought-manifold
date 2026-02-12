@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate, Link, useLocation } from 'react-router-dom';
 import { postsAPI, commentsAPI, adminAPI, reviewsAPI } from '../api';
 import { useAuth } from '../context/AuthContext';
+import { MarkdownEditorPreview, MarkdownRenderer } from '../components';
 
 const categoryLabels = {
     essay: '에세이',
@@ -43,6 +44,40 @@ const paperStatusLabels = {
 
 const POST_DETAIL_CACHE_TTL_MS = 2000;
 const postDetailRequestCache = new Map();
+const MAX_COMMENT_INDENT_LEVEL = 8;
+
+function toTimestamp(value) {
+    const time = new Date(value).getTime();
+    return Number.isNaN(time) ? 0 : time;
+}
+
+function buildCommentTree(flatComments) {
+    const nodeMap = new Map();
+    const roots = [];
+
+    flatComments.forEach((comment) => {
+        nodeMap.set(comment.id, { ...comment, children: [] });
+    });
+
+    nodeMap.forEach((node) => {
+        const parentId = node.parent_comment_id;
+        if (parentId !== null && parentId !== undefined && nodeMap.has(parentId)) {
+            nodeMap.get(parentId).children.push(node);
+        } else {
+            roots.push(node);
+        }
+    });
+
+    const sortThread = (nodes) => {
+        nodes.sort((a, b) => toTimestamp(a.created_at) - toTimestamp(b.created_at));
+        nodes.forEach((child) => sortThread(child.children));
+    };
+
+    roots.forEach((root) => sortThread(root.children));
+    roots.sort((a, b) => toTimestamp(b.created_at) - toTimestamp(a.created_at));
+
+    return roots;
+}
 
 function getPostDeduped(postId, source = null) {
     const cacheKey = source ? `${postId}:${source}` : `${postId}`;
@@ -109,6 +144,10 @@ function PostDetail() {
     const [commentText, setCommentText] = useState('');
     const [commentSubmitting, setCommentSubmitting] = useState(false);
     const [commentError, setCommentError] = useState(null);
+    const [replyParentId, setReplyParentId] = useState(null);
+    const [replyText, setReplyText] = useState('');
+    const [replySubmitting, setReplySubmitting] = useState(false);
+    const [replyError, setReplyError] = useState(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -140,7 +179,7 @@ function PostDetail() {
             try {
                 const data = await commentsAPI.list(id);
                 if (cancelled) return;
-                setComments(data);
+                setComments(Array.isArray(data) ? data : []);
             } catch (err) {
                 if (cancelled) return;
                 console.error('Failed to fetch comments:', err);
@@ -148,11 +187,21 @@ function PostDetail() {
         };
         fetchPost();
         fetchComments();
+        setReplyParentId(null);
+        setReplyText('');
+        setReplyError(null);
 
         return () => {
             cancelled = true;
         };
     }, [id, reviewCenterSource]);
+
+    const commentTree = useMemo(() => buildCommentTree(comments), [comments]);
+
+    const refreshComments = async () => {
+        const data = await commentsAPI.list(id);
+        setComments(Array.isArray(data) ? data : []);
+    };
 
     const handleLike = async () => {
         if (!user) {
@@ -199,8 +248,8 @@ function PostDetail() {
         setCommentSubmitting(true);
         setCommentError(null);
         try {
-            const newComment = await commentsAPI.create(id, commentText.trim());
-            setComments(prev => [...prev, newComment]);
+            await commentsAPI.create(id, commentText.trim(), null);
+            await refreshComments();
             setCommentText('');
         } catch (err) {
             console.error('Failed to create comment:', err);
@@ -225,9 +274,56 @@ function PostDetail() {
             } else {
                 throw new Error('Not authorized to delete this comment');
             }
-            setComments(prev => prev.filter(c => c.id !== commentId));
+            if (replyParentId === commentId) {
+                setReplyParentId(null);
+                setReplyText('');
+                setReplyError(null);
+            }
+            await refreshComments();
         } catch (err) {
             console.error('Failed to delete comment:', err);
+        }
+    };
+
+    const handleReplyToggle = (commentId) => {
+        if (!user) {
+            navigate('/login');
+            return;
+        }
+
+        if (replyParentId === commentId) {
+            setReplyParentId(null);
+            setReplyText('');
+            setReplyError(null);
+            return;
+        }
+
+        setReplyParentId(commentId);
+        setReplyText('');
+        setReplyError(null);
+    };
+
+    const handleReplySubmit = async (e, parentCommentId) => {
+        e.preventDefault();
+        if (!replyText.trim() || replySubmitting) return;
+
+        setReplySubmitting(true);
+        setReplyError(null);
+
+        try {
+            await commentsAPI.create(id, replyText.trim(), parentCommentId);
+            setReplyParentId(null);
+            setReplyText('');
+            await refreshComments();
+        } catch (err) {
+            console.error('Failed to create reply:', err);
+            if (err.response?.status === 401) {
+                setReplyError('로그인이 필요합니다.');
+            } else {
+                setReplyError('답글 작성에 실패했습니다.');
+            }
+        } finally {
+            setReplySubmitting(false);
         }
     };
 
@@ -350,6 +446,113 @@ function PostDetail() {
     const authorInitial = post?.author?.display_name?.[0] || post?.author?.username?.[0] || '?';
     const authorName = post?.author?.display_name || post?.author?.username || '익명';
 
+    const renderCommentNode = (comment, depth = 0) => {
+        const visualDepth = Math.min(depth, MAX_COMMENT_INDENT_LEVEL);
+        const commentAuthorInitial = comment.author?.display_name?.[0] || comment.author?.username?.[0] || '?';
+        const commentAuthorName = comment.author?.display_name || comment.author?.username || '익명';
+        const commentDate = new Date(comment.created_at).toLocaleDateString('ko-KR', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+        const canDeleteComment = user && !comment.is_deleted && (user.id === comment.author_id || user.is_admin);
+        const isReplyFormOpen = replyParentId === comment.id;
+
+        return (
+            <div
+                key={comment.id}
+                className="comment-node"
+                style={{ '--comment-depth': visualDepth }}
+            >
+                <div className={`comment-item ${comment.is_deleted ? 'is-deleted' : ''}`}>
+                    <div className="comment-avatar">
+                        {comment.author?.avatar_url ? (
+                            <img src={comment.author.avatar_url} alt={commentAuthorName} />
+                        ) : (
+                            commentAuthorInitial.toUpperCase()
+                        )}
+                    </div>
+                    <div className="comment-body">
+                        <div className="comment-header">
+                            <span className="comment-author">{commentAuthorName}</span>
+                            <span className="comment-date">{commentDate}</span>
+                            <div className="comment-actions">
+                                <button
+                                    type="button"
+                                    className="comment-reply-btn"
+                                    onClick={() => handleReplyToggle(comment.id)}
+                                >
+                                    {isReplyFormOpen ? '닫기' : '답글'}
+                                </button>
+                                {canDeleteComment && (
+                                    <button
+                                        type="button"
+                                        className="comment-delete-btn"
+                                        onClick={() => handleDeleteComment(comment.id, comment.author_id)}
+                                        title="삭제"
+                                    >
+                                        ✕
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                        <div className="comment-content">
+                            {comment.is_deleted ? (
+                                <p className="comment-deleted-placeholder">삭제된 댓글입니다.</p>
+                            ) : (
+                                <MarkdownRenderer content={comment.content} className="markdown-comment" />
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                {isReplyFormOpen && user && (
+                    <form
+                        className="comment-reply-form"
+                        onSubmit={(event) => handleReplySubmit(event, comment.id)}
+                    >
+                        {replyError && (
+                            <div className="form-error" style={{ marginBottom: '0.75rem' }}>
+                                <span className="form-error-icon">⚠️</span>
+                                {replyError}
+                            </div>
+                        )}
+                        <div className="comment-form-row">
+                            <div className="comment-avatar">
+                                {user.display_name?.[0]?.toUpperCase() || user.username?.[0]?.toUpperCase() || '?'}
+                            </div>
+                            <MarkdownEditorPreview
+                                compact
+                                value={replyText}
+                                onChange={setReplyText}
+                                placeholder="답글을 작성하세요..."
+                                rows={4}
+                                previewClassName="markdown-comment markdown-preview"
+                                emptyText="답글 미리보기가 여기에 표시됩니다."
+                            />
+                        </div>
+                        <div className="comment-form-actions">
+                            <button
+                                type="submit"
+                                className="btn btn-primary btn-sm"
+                                disabled={replySubmitting || !replyText.trim()}
+                            >
+                                {replySubmitting ? '등록 중...' : '답글 등록'}
+                            </button>
+                        </div>
+                    </form>
+                )}
+
+                {comment.children?.length > 0 && (
+                    <div className="comment-children">
+                        {comment.children.map((child) => renderCommentNode(child, depth + 1))}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
     if (loading) {
         return (
             <main className="post-detail-page">
@@ -429,6 +632,17 @@ function PostDetail() {
                                     )}
                                 </div>
                             </div>
+
+                            {post.github_url && (
+                                <a
+                                    className="post-detail-github-link"
+                                    href={post.github_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                    🔗 GitHub 링크 열기
+                                </a>
+                            )}
                         </header>
 
                         {post.category === 'paper' && canViewAiReview && (
@@ -555,9 +769,7 @@ function PostDetail() {
 
                         {/* Content */}
                         <div className="post-detail-content">
-                            {post.content.split('\n').map((paragraph, i) => (
-                                paragraph.trim() ? <p key={i}>{paragraph}</p> : <br key={i} />
-                            ))}
+                            <MarkdownRenderer content={post.content} className="markdown-post" />
                         </div>
 
                         {/* Tags */}
@@ -675,14 +887,17 @@ function PostDetail() {
                                         <div className="comment-avatar">
                                             {user.display_name?.[0]?.toUpperCase() || user.username?.[0]?.toUpperCase() || '?'}
                                         </div>
-                                        <textarea
-                                            className="comment-input"
-                                            placeholder="댓글을 작성하세요..."
+                                        <MarkdownEditorPreview
+                                            compact
                                             value={commentText}
-                                            onChange={(e) => setCommentText(e.target.value)}
-                                            rows={3}
+                                            onChange={setCommentText}
+                                            placeholder="댓글을 작성하세요..."
+                                            rows={4}
+                                            previewClassName="markdown-comment markdown-preview"
+                                            emptyText="댓글 미리보기가 여기에 표시됩니다."
                                         />
                                     </div>
+                                    <span className="form-hint">수식은 `$...$`(inline), `$$...$$`(block) 문법을 사용할 수 있습니다.</span>
                                     <div className="comment-form-actions">
                                         <button
                                             type="submit"
@@ -701,50 +916,12 @@ function PostDetail() {
 
                             {/* Comment List */}
                             <div className="comment-list">
-                                {comments.length === 0 ? (
+                                {commentTree.length === 0 ? (
                                     <div className="comment-empty">
                                         아직 댓글이 없습니다. 첫 댓글을 남겨보세요! 🙌
                                     </div>
                                 ) : (
-                                    comments.map(comment => {
-                                        const commentAuthorInitial = comment.author?.display_name?.[0] || comment.author?.username?.[0] || '?';
-                                        const commentAuthorName = comment.author?.display_name || comment.author?.username || '익명';
-                                        const commentDate = new Date(comment.created_at).toLocaleDateString('ko-KR', {
-                                            month: 'short',
-                                            day: 'numeric',
-                                            hour: '2-digit',
-                                            minute: '2-digit',
-                                        });
-                                        const canDeleteComment = user && (user.id === comment.author_id || user.is_admin);
-
-                                        return (
-                                            <div key={comment.id} className="comment-item">
-                                                <div className="comment-avatar">
-                                                    {comment.author?.avatar_url ? (
-                                                        <img src={comment.author.avatar_url} alt={commentAuthorName} />
-                                                    ) : (
-                                                        commentAuthorInitial.toUpperCase()
-                                                    )}
-                                                </div>
-                                                <div className="comment-body">
-                                                    <div className="comment-header">
-                                                        <span className="comment-author">{commentAuthorName}</span>
-                                                        <span className="comment-date">{commentDate}</span>
-                                                        {canDeleteComment && (
-                                                            <button
-                                                                className="comment-delete-btn"
-                                                                onClick={() => handleDeleteComment(comment.id, comment.author_id)}
-                                                                title="삭제"
-                                                            >
-                                                                ✕
-                                                            </button>
-                                                        )}
-                                                    </div>
-                                                    <p className="comment-content">{comment.content}</p>
-                                                </div>
-                                            </div>
-                                        );
-                                    })
+                                    commentTree.map((comment) => renderCommentNode(comment))
                                 )}
                             </div>
                         </section>
