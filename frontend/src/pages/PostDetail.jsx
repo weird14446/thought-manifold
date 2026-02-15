@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate, Link, useLocation } from 'react-router-dom';
-import { postsAPI, commentsAPI, adminAPI, reviewsAPI } from '../api';
+import { postsAPI, commentsAPI, adminAPI, reviewsAPI, reviewCommentsAPI } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { MarkdownEditorPreview, MarkdownRenderer } from '../components';
 
@@ -138,6 +138,9 @@ function PostDetail() {
     const [reviewError, setReviewError] = useState(null);
     const [reviewRerunning, setReviewRerunning] = useState(false);
     const [publishing, setPublishing] = useState(false);
+    const [versions, setVersions] = useState([]);
+    const [versionsLoading, setVersionsLoading] = useState(false);
+    const [selectedReviewVersionId, setSelectedReviewVersionId] = useState(null);
 
     // Comments state
     const [comments, setComments] = useState([]);
@@ -148,6 +151,18 @@ function PostDetail() {
     const [replyText, setReplyText] = useState('');
     const [replySubmitting, setReplySubmitting] = useState(false);
     const [replyError, setReplyError] = useState(null);
+
+    // Review comments state
+    const [reviewComments, setReviewComments] = useState([]);
+    const [reviewCommentsLoading, setReviewCommentsLoading] = useState(false);
+    const [reviewCommentsError, setReviewCommentsError] = useState(null);
+    const [reviewCommentText, setReviewCommentText] = useState('');
+    const [reviewCommentSubmitting, setReviewCommentSubmitting] = useState(false);
+    const [reviewCommentError, setReviewCommentError] = useState(null);
+    const [reviewReplyParentId, setReviewReplyParentId] = useState(null);
+    const [reviewReplyText, setReviewReplyText] = useState('');
+    const [reviewReplySubmitting, setReviewReplySubmitting] = useState(false);
+    const [reviewReplyError, setReviewReplyError] = useState(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -197,10 +212,17 @@ function PostDetail() {
     }, [id, reviewCenterSource]);
 
     const commentTree = useMemo(() => buildCommentTree(comments), [comments]);
+    const reviewCommentTree = useMemo(() => buildCommentTree(reviewComments), [reviewComments]);
 
     const refreshComments = async () => {
         const data = await commentsAPI.list(id);
         setComments(Array.isArray(data) ? data : []);
+    };
+
+    const refreshReviewComments = async (versionId = selectedReviewVersionId) => {
+        if (!post || !user || post.category !== 'paper') return;
+        const data = await reviewCommentsAPI.list(post.id, versionId);
+        setReviewComments(Array.isArray(data?.comments) ? data.comments : []);
     };
 
     const handleLike = async () => {
@@ -336,6 +358,13 @@ function PostDetail() {
         user &&
         (user.id === post.author_id || user.is_admin)
     );
+    const canAccessReviewComments = !!(
+        post &&
+        post.category === 'paper' &&
+        user &&
+        (post.current_revision || 0) > 0 &&
+        (post.is_published || canViewAiReview)
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -432,6 +461,158 @@ function PostDetail() {
             setReviewError(err.response?.data?.detail || '논문 게재 처리에 실패했습니다.');
         } finally {
             setPublishing(false);
+        }
+    };
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const fetchVersions = async () => {
+            if (!post || post.category !== 'paper' || !canViewAiReview) {
+                setVersions([]);
+                setSelectedReviewVersionId(null);
+                return;
+            }
+
+            setVersionsLoading(true);
+            try {
+                const data = await postsAPI.getVersions(post.id, 50, 0);
+                if (cancelled) return;
+                const fetched = Array.isArray(data?.versions) ? data.versions : [];
+                setVersions(fetched);
+                if (fetched.length === 0) {
+                    setSelectedReviewVersionId(null);
+                } else if (!selectedReviewVersionId || !fetched.some((v) => v.id === selectedReviewVersionId)) {
+                    setSelectedReviewVersionId(fetched[0].id);
+                }
+            } catch (err) {
+                if (!cancelled) {
+                    setVersions([]);
+                    setSelectedReviewVersionId(null);
+                }
+            } finally {
+                if (!cancelled) {
+                    setVersionsLoading(false);
+                }
+            }
+        };
+
+        fetchVersions();
+        return () => {
+            cancelled = true;
+        };
+    }, [post?.id, post?.category, canViewAiReview]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const fetchReviewComments = async () => {
+            if (!canAccessReviewComments || !post) {
+                setReviewComments([]);
+                setReviewCommentsError(null);
+                return;
+            }
+
+            setReviewCommentsLoading(true);
+            setReviewCommentsError(null);
+            try {
+                const versionId = canViewAiReview ? selectedReviewVersionId : null;
+                const data = await reviewCommentsAPI.list(post.id, versionId);
+                if (cancelled) return;
+                setReviewComments(Array.isArray(data?.comments) ? data.comments : []);
+            } catch (err) {
+                if (cancelled) return;
+                setReviewComments([]);
+                setReviewCommentsError(err.response?.data?.detail || '심사 코멘트를 불러오지 못했습니다.');
+            } finally {
+                if (!cancelled) {
+                    setReviewCommentsLoading(false);
+                }
+            }
+        };
+
+        fetchReviewComments();
+        return () => {
+            cancelled = true;
+        };
+    }, [post?.id, canAccessReviewComments, canViewAiReview, selectedReviewVersionId]);
+
+    const handleReviewCommentSubmit = async (e) => {
+        e.preventDefault();
+        if (!post || !reviewCommentText.trim() || reviewCommentSubmitting) return;
+
+        setReviewCommentSubmitting(true);
+        setReviewCommentError(null);
+        try {
+            await reviewCommentsAPI.create(
+                post.id,
+                reviewCommentText.trim(),
+                null,
+                canViewAiReview ? selectedReviewVersionId : null,
+            );
+            setReviewCommentText('');
+            await refreshReviewComments(canViewAiReview ? selectedReviewVersionId : null);
+        } catch (err) {
+            setReviewCommentError(err.response?.data?.detail || '심사 코멘트 작성에 실패했습니다.');
+        } finally {
+            setReviewCommentSubmitting(false);
+        }
+    };
+
+    const handleReviewReplyToggle = (commentId) => {
+        if (!user) {
+            navigate('/login');
+            return;
+        }
+
+        if (reviewReplyParentId === commentId) {
+            setReviewReplyParentId(null);
+            setReviewReplyText('');
+            setReviewReplyError(null);
+            return;
+        }
+
+        setReviewReplyParentId(commentId);
+        setReviewReplyText('');
+        setReviewReplyError(null);
+    };
+
+    const handleReviewReplySubmit = async (e, parentCommentId) => {
+        e.preventDefault();
+        if (!post || !reviewReplyText.trim() || reviewReplySubmitting) return;
+
+        setReviewReplySubmitting(true);
+        setReviewReplyError(null);
+        try {
+            await reviewCommentsAPI.create(
+                post.id,
+                reviewReplyText.trim(),
+                parentCommentId,
+                canViewAiReview ? selectedReviewVersionId : null,
+            );
+            setReviewReplyParentId(null);
+            setReviewReplyText('');
+            await refreshReviewComments(canViewAiReview ? selectedReviewVersionId : null);
+        } catch (err) {
+            setReviewReplyError(err.response?.data?.detail || '답글 작성에 실패했습니다.');
+        } finally {
+            setReviewReplySubmitting(false);
+        }
+    };
+
+    const handleDeleteReviewComment = async (comment) => {
+        if (!post || !user) return;
+
+        try {
+            await reviewCommentsAPI.delete(post.id, comment.id);
+            if (reviewReplyParentId === comment.id) {
+                setReviewReplyParentId(null);
+                setReviewReplyText('');
+                setReviewReplyError(null);
+            }
+            await refreshReviewComments(canViewAiReview ? selectedReviewVersionId : null);
+        } catch (err) {
+            setReviewCommentsError(err.response?.data?.detail || '심사 코멘트 삭제에 실패했습니다.');
         }
     };
 
@@ -553,6 +734,117 @@ function PostDetail() {
         );
     };
 
+    const renderReviewCommentNode = (comment, depth = 0) => {
+        const visualDepth = Math.min(depth, MAX_COMMENT_INDENT_LEVEL);
+        const commentAuthorInitial = comment.author?.display_name?.[0] || comment.author?.username?.[0] || '?';
+        const commentAuthorName = comment.author?.display_name || comment.author?.username || '익명';
+        const commentDate = new Date(comment.created_at).toLocaleDateString('ko-KR', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+        const canDeleteReviewComment = user && !comment.is_deleted && (
+            user.is_admin ||
+            user.id === comment.author_id ||
+            (!post.is_published && user.id === post.author_id)
+        );
+        const isReplyFormOpen = reviewReplyParentId === comment.id;
+
+        return (
+            <div
+                key={comment.id}
+                className="comment-node"
+                style={{ '--comment-depth': visualDepth }}
+            >
+                <div className={`comment-item ${comment.is_deleted ? 'is-deleted' : ''}`}>
+                    <div className="comment-avatar">
+                        {comment.author?.avatar_url ? (
+                            <img src={comment.author.avatar_url} alt={commentAuthorName} />
+                        ) : (
+                            commentAuthorInitial.toUpperCase()
+                        )}
+                    </div>
+                    <div className="comment-body">
+                        <div className="comment-header">
+                            <span className="comment-author">{commentAuthorName}</span>
+                            <span className="comment-date">{commentDate}</span>
+                            <div className="comment-actions">
+                                <button
+                                    type="button"
+                                    className="comment-reply-btn"
+                                    onClick={() => handleReviewReplyToggle(comment.id)}
+                                >
+                                    {isReplyFormOpen ? '닫기' : '답글'}
+                                </button>
+                                {canDeleteReviewComment && (
+                                    <button
+                                        type="button"
+                                        className="comment-delete-btn"
+                                        onClick={() => handleDeleteReviewComment(comment)}
+                                        title="삭제"
+                                    >
+                                        ✕
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                        <div className="comment-content">
+                            {comment.is_deleted ? (
+                                <p className="comment-deleted-placeholder">삭제된 댓글입니다.</p>
+                            ) : (
+                                <MarkdownRenderer content={comment.content} className="markdown-comment" />
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                {isReplyFormOpen && user && (
+                    <form
+                        className="comment-reply-form"
+                        onSubmit={(event) => handleReviewReplySubmit(event, comment.id)}
+                    >
+                        {reviewReplyError && (
+                            <div className="form-error" style={{ marginBottom: '0.75rem' }}>
+                                <span className="form-error-icon">⚠️</span>
+                                {reviewReplyError}
+                            </div>
+                        )}
+                        <div className="comment-form-row">
+                            <div className="comment-avatar">
+                                {user.display_name?.[0]?.toUpperCase() || user.username?.[0]?.toUpperCase() || '?'}
+                            </div>
+                            <MarkdownEditorPreview
+                                compact
+                                value={reviewReplyText}
+                                onChange={setReviewReplyText}
+                                placeholder="심사 답글을 작성하세요..."
+                                rows={4}
+                                previewClassName="markdown-comment markdown-preview"
+                                emptyText="답글 미리보기가 여기에 표시됩니다."
+                            />
+                        </div>
+                        <div className="comment-form-actions">
+                            <button
+                                type="submit"
+                                className="btn btn-primary btn-sm"
+                                disabled={reviewReplySubmitting || !reviewReplyText.trim()}
+                            >
+                                {reviewReplySubmitting ? '등록 중...' : '답글 등록'}
+                            </button>
+                        </div>
+                    </form>
+                )}
+
+                {comment.children?.length > 0 && (
+                    <div className="comment-children">
+                        {comment.children.map((child) => renderReviewCommentNode(child, depth + 1))}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
     if (loading) {
         return (
             <main className="post-detail-page">
@@ -626,6 +918,9 @@ function PostDetail() {
                                     <span className="post-detail-stat">❤️ {post.like_count}</span>
                                     {post.metrics?.citation_count !== undefined && (
                                         <span className="post-detail-stat">📚 {post.metrics.citation_count}</span>
+                                    )}
+                                    {post.category === 'paper' && (
+                                        <span className="post-detail-stat">🗂️ Rev v{post.current_revision ?? 0}</span>
                                     )}
                                     {post.category === 'paper' && (
                                         <span className="post-detail-stat">🧭 {paperStatusLabels[post.paper_status] || post.paper_status}</span>
@@ -765,6 +1060,93 @@ function PostDetail() {
                             <div className="post-unpublished-notice">
                                 현재 이 논문은 공개 전 상태({paperStatusLabels[post.paper_status] || post.paper_status})입니다. <Link to="/reviews">AI 심사 센터</Link>에서 진행 상태를 확인하세요.
                             </div>
+                        )}
+
+                        {post.category === 'paper' && (canViewAiReview || post.is_published) && (
+                            <section className="paper-workflow-panel">
+                                <div className="paper-workflow-header">
+                                    <h2>📑 Revision & 심사 코멘트</h2>
+                                    {canViewAiReview && selectedReviewVersionId && (
+                                        <span className="paper-workflow-version-badge">
+                                            현재 선택: v{versions.find((v) => v.id === selectedReviewVersionId)?.version_number ?? '-'}
+                                        </span>
+                                    )}
+                                </div>
+
+                                {canViewAiReview && (
+                                    <div className="paper-version-list">
+                                        {versionsLoading ? (
+                                            <div className="paper-version-empty">버전 이력을 불러오는 중...</div>
+                                        ) : versions.length === 0 ? (
+                                            <div className="paper-version-empty">등록된 제출 버전이 없습니다.</div>
+                                        ) : (
+                                            versions.map((version) => (
+                                                <button
+                                                    key={version.id}
+                                                    type="button"
+                                                    className={`paper-version-item ${selectedReviewVersionId === version.id ? 'active' : ''}`}
+                                                    onClick={() => setSelectedReviewVersionId(version.id)}
+                                                >
+                                                    <strong>Revision v{version.version_number}</strong>
+                                                    <span>{new Date(version.submitted_at).toLocaleString('ko-KR')}</span>
+                                                </button>
+                                            ))
+                                        )}
+                                    </div>
+                                )}
+
+                                {!user && post.is_published ? (
+                                    <div className="comment-login-prompt">
+                                        <Link to="/login">로그인</Link>하면 심사 코멘트를 확인하고 답글을 남길 수 있습니다.
+                                    </div>
+                                ) : canAccessReviewComments ? (
+                                    <div className="paper-review-comments">
+                                        <form className="comment-form" onSubmit={handleReviewCommentSubmit}>
+                                            {reviewCommentError && (
+                                                <div className="form-error" style={{ marginBottom: '0.75rem' }}>
+                                                    <span className="form-error-icon">⚠️</span>
+                                                    {reviewCommentError}
+                                                </div>
+                                            )}
+                                            <div className="comment-form-row">
+                                                <div className="comment-avatar">
+                                                    {user.display_name?.[0]?.toUpperCase() || user.username?.[0]?.toUpperCase() || '?'}
+                                                </div>
+                                                <MarkdownEditorPreview
+                                                    compact
+                                                    value={reviewCommentText}
+                                                    onChange={setReviewCommentText}
+                                                    placeholder="심사 코멘트를 작성하세요..."
+                                                    rows={4}
+                                                    previewClassName="markdown-comment markdown-preview"
+                                                    emptyText="심사 코멘트 미리보기가 여기에 표시됩니다."
+                                                />
+                                            </div>
+                                            <div className="comment-form-actions">
+                                                <button
+                                                    type="submit"
+                                                    className="btn btn-primary btn-sm"
+                                                    disabled={reviewCommentSubmitting || !reviewCommentText.trim()}
+                                                >
+                                                    {reviewCommentSubmitting ? '등록 중...' : '심사 코멘트 등록'}
+                                                </button>
+                                            </div>
+                                        </form>
+
+                                        <div className="comment-list">
+                                            {reviewCommentsLoading ? (
+                                                <div className="comment-empty">심사 코멘트를 불러오는 중...</div>
+                                            ) : reviewCommentsError ? (
+                                                <div className="comment-empty">{reviewCommentsError}</div>
+                                            ) : reviewCommentTree.length === 0 ? (
+                                                <div className="comment-empty">등록된 심사 코멘트가 없습니다.</div>
+                                            ) : (
+                                                reviewCommentTree.map((comment) => renderReviewCommentNode(comment))
+                                            )}
+                                        </div>
+                                    </div>
+                                ) : null}
+                            </section>
                         )}
 
                         {/* Content */}

@@ -90,6 +90,19 @@ async fn rerun_post_review(
         ));
     }
 
+    let latest_version_row =
+        sqlx::query_as::<_, (Option<i64>,)>("SELECT latest_paper_version_id FROM posts WHERE id = ?")
+            .bind(post_id)
+            .fetch_one(&pool)
+            .await
+            .map_err(internal_error)?;
+    let latest_paper_version_id = latest_version_row.0.ok_or_else(|| {
+        (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"detail": "No submitted revision available for rerun"})),
+        )
+    })?;
+
     let now = chrono::Utc::now();
     sqlx::query(
         r#"
@@ -109,7 +122,7 @@ async fn rerun_post_review(
     .await
     .map_err(internal_error)?;
 
-    let review_id = schedule_review(&pool, post_id, ReviewTrigger::Manual)
+    let review_id = schedule_review(&pool, post_id, Some(latest_paper_version_id), ReviewTrigger::Manual)
         .await
         .map_err(internal_error)?;
 

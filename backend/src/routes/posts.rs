@@ -48,6 +48,7 @@ const POST_SELECT_COLUMNS: &str = r#"
         p.is_published,
         p.published_at,
         p.paper_status,
+        CAST(p.current_revision AS SIGNED) AS current_revision,
         COALESCE(ps.view_count, 0) AS view_count,
         COALESCE(ps.like_count, 0) AS like_count,
         p.created_at,
@@ -145,6 +146,7 @@ async fn list_posts(
             is_published: post.is_published,
             published_at: post.published_at,
             paper_status: post.paper_status,
+            current_revision: post.current_revision,
             view_count: post.view_count,
             like_count: post.like_count,
             user_liked: None,
@@ -250,6 +252,7 @@ async fn get_post(
         is_published: post.is_published,
         published_at: post.published_at,
         paper_status: post.paper_status,
+        current_revision: post.current_revision,
         view_count: post.view_count + 1,
         like_count: post.like_count,
         user_liked,
@@ -404,8 +407,24 @@ async fn create_post(
     replace_post_citations(&pool, post_id, &manual_citation_ids).await?;
     replace_post_auto_citations(&pool, post_id, &auto_citation_ids).await?;
 
+    let tags_vec = process_tags(&pool, post_id, &tags_str).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"detail": e.to_string()})),
+        )
+    })?;
+
     if category_code == PAPER_CATEGORY && paper_status == PAPER_STATUS_SUBMITTED {
-        if let Err(error) = schedule_review(&pool, post_id, ReviewTrigger::AutoCreate).await {
+        let (paper_version_id, _) =
+            create_paper_version_snapshot(&pool, post_id, current_user.id).await?;
+        if let Err(error) = schedule_review(
+            &pool,
+            post_id,
+            Some(paper_version_id),
+            ReviewTrigger::AutoCreate,
+        )
+        .await
+        {
             tracing::error!(
                 "Failed to schedule auto AI review on create for post {}: {}",
                 post_id,
@@ -413,13 +432,6 @@ async fn create_post(
             );
         }
     }
-
-    let tags_vec = process_tags(&pool, post_id, &tags_str).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"detail": e.to_string()})),
-        )
-    })?;
 
     let post_query = format!(
         "{}{} WHERE p.id = ?",
@@ -450,6 +462,7 @@ async fn create_post(
             is_published: post.is_published,
             published_at: post.published_at,
             paper_status: post.paper_status,
+            current_revision: post.current_revision,
             view_count: post.view_count,
             like_count: post.like_count,
             user_liked: Some(false),
@@ -669,6 +682,11 @@ async fn update_post(
 
     if category_code != PAPER_CATEGORY {
         clear_all_post_citations(&pool, post_id).await?;
+        sqlx::query("UPDATE posts SET current_revision = 0, latest_paper_version_id = NULL WHERE id = ?")
+            .bind(post_id)
+            .execute(&pool)
+            .await
+            .map_err(internal_error)?;
     } else {
         if let Some(ids) = manual_citation_ids {
             replace_post_citations(&pool, post_id, &ids).await?;
@@ -678,15 +696,24 @@ async fn update_post(
             prepare_auto_citations_for_content(&pool, &category_code, &content, Some(post_id))
                 .await?;
         replace_post_auto_citations(&pool, post_id, &auto_citation_ids).await?;
+    }
 
-        if paper_status == PAPER_STATUS_SUBMITTED {
-            if let Err(error) = schedule_review(&pool, post_id, ReviewTrigger::AutoUpdate).await {
-                tracing::error!(
-                    "Failed to schedule auto AI review on update for post {}: {}",
-                    post_id,
-                    error
-                );
-            }
+    if category_code == PAPER_CATEGORY && paper_status == PAPER_STATUS_SUBMITTED {
+        let (paper_version_id, _) =
+            create_paper_version_snapshot(&pool, post_id, current_user.id).await?;
+        if let Err(error) = schedule_review(
+            &pool,
+            post_id,
+            Some(paper_version_id),
+            ReviewTrigger::AutoUpdate,
+        )
+        .await
+        {
+            tracing::error!(
+                "Failed to schedule auto AI review on update for post {}: {}",
+                post_id,
+                error
+            );
         }
     }
 
@@ -717,6 +744,7 @@ async fn update_post(
         is_published: updated_post.is_published,
         published_at: updated_post.published_at,
         paper_status: updated_post.paper_status,
+        current_revision: updated_post.current_revision,
         view_count: updated_post.view_count,
         like_count: updated_post.like_count,
         user_liked: Some(user_liked),
@@ -1633,6 +1661,142 @@ async fn replace_post_auto_citations(
     }
 
     Ok(())
+}
+
+async fn create_paper_version_snapshot(
+    pool: &MySqlPool,
+    post_id: i64,
+    submitted_by: i64,
+) -> Result<(i64, i32), (StatusCode, Json<serde_json::Value>)> {
+    let mut tx = pool.begin().await.map_err(internal_error)?;
+
+    let (next_version,): (i32,) = sqlx::query_as(
+        "SELECT CAST(COALESCE(MAX(version_number), 0) + 1 AS SIGNED) FROM paper_versions WHERE post_id = ?",
+    )
+    .bind(post_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(internal_error)?;
+
+    let source = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        r#"
+        SELECT
+            p.title,
+            p.content,
+            p.summary,
+            p.github_url,
+            pf.file_path,
+            pf.file_name
+        FROM posts p
+        LEFT JOIN post_files pf ON pf.post_id = p.id
+        WHERE p.id = ?
+        "#,
+    )
+    .bind(post_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(internal_error)?;
+
+    let tags: Vec<String> = sqlx::query_as::<_, (String,)>(
+        r#"
+        SELECT t.name
+        FROM post_tags pt
+        JOIN tags t ON t.id = pt.tag_id
+        WHERE pt.post_id = ?
+        ORDER BY t.name
+        "#,
+    )
+    .bind(post_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(internal_error)?
+    .into_iter()
+    .map(|(name,)| name)
+    .collect();
+
+    let citations: Vec<i64> =
+        sqlx::query_as::<_, (i64,)>("SELECT DISTINCT cited_post_id FROM post_citations WHERE citing_post_id = ? ORDER BY cited_post_id")
+            .bind(post_id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(internal_error)?
+            .into_iter()
+            .map(|(id,)| id)
+            .collect();
+
+    let now = Utc::now();
+    let tags_json = if tags.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&tags).map_err(internal_error)?)
+    };
+    let citations_json = if citations.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&citations).map_err(internal_error)?)
+    };
+
+    let result = sqlx::query(
+        r#"
+        INSERT INTO paper_versions (
+            post_id,
+            version_number,
+            title,
+            content,
+            summary,
+            github_url,
+            file_path,
+            file_name,
+            tags_json,
+            citations_json,
+            submitted_by,
+            submitted_at,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(post_id)
+    .bind(next_version)
+    .bind(&source.0)
+    .bind(&source.1)
+    .bind(&source.2)
+    .bind(&source.3)
+    .bind(&source.4)
+    .bind(&source.5)
+    .bind(&tags_json)
+    .bind(&citations_json)
+    .bind(submitted_by)
+    .bind(now)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_error)?;
+
+    let version_id = result.last_insert_id() as i64;
+
+    sqlx::query(
+        "UPDATE posts SET current_revision = ?, latest_paper_version_id = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(next_version)
+    .bind(version_id)
+    .bind(now)
+    .bind(post_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_error)?;
+
+    tx.commit().await.map_err(internal_error)?;
+    Ok((version_id, next_version))
 }
 
 fn internal_error<E: ToString>(error: E) -> (StatusCode, Json<serde_json::Value>) {

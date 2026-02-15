@@ -46,6 +46,8 @@ pub struct AiReviewPeer {
 pub struct AiReviewResponse {
     pub id: i64,
     pub post_id: i64,
+    pub paper_version_id: Option<i64>,
+    pub version_number: Option<i32>,
     pub status: AiReviewStatus,
     pub trigger: String,
     pub decision: Option<AiReviewDecision>,
@@ -73,6 +75,8 @@ pub struct AiReviewListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiReviewSummary {
     pub id: i64,
+    pub paper_version_id: Option<i64>,
+    pub version_number: Option<i32>,
     pub status: AiReviewStatus,
     pub decision: Option<AiReviewDecision>,
     pub trigger: String,
@@ -88,6 +92,7 @@ pub struct MyPaperReviewItem {
     pub title: String,
     pub category: String,
     pub paper_status: String,
+    pub current_revision: i32,
     pub is_published: bool,
     pub published_at: Option<DateTime<Utc>>,
     pub latest_review: Option<AiReviewSummary>,

@@ -2152,6 +2152,82 @@ a:hover {
   text-decoration: underline;
 }
 
+.paper-workflow-panel {
+  margin: 0 var(--space-2xl) var(--space-lg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  background: var(--bg-elevated);
+  padding: var(--space-lg);
+  display: grid;
+  gap: var(--space-md);
+}
+
+.paper-workflow-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.paper-workflow-header h2 {
+  font-size: 1.05rem;
+  color: var(--text-primary);
+}
+
+.paper-workflow-version-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--bg-primary) 90%);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, var(--border-color) 70%);
+  border-radius: var(--radius-full);
+  padding: 0.25rem 0.625rem;
+}
+
+.paper-version-list {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.paper-version-item {
+  width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+  padding: var(--space-sm) var(--space-md);
+  text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  cursor: pointer;
+}
+
+.paper-version-item strong {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+}
+
+.paper-version-item span {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.paper-version-item.active {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--border-color) 55%);
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--bg-primary) 92%);
+}
+
+.paper-version-empty {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.paper-review-comments {
+  display: grid;
+  gap: var(--space-md);
+}
+
 /* Attachment */
 .post-detail-attachment {
   margin: 0 var(--space-2xl);
@@ -2751,6 +2827,21 @@ a:hover {
 
   .post-unpublished-notice {
     margin: 0 var(--space-lg) var(--space-md);
+  }
+
+  .paper-workflow-panel {
+    margin: 0 var(--space-lg) var(--space-lg);
+    padding: var(--space-md);
+  }
+
+  .paper-workflow-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .paper-version-item {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .post-ai-review-header {

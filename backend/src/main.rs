@@ -19,8 +19,8 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use routes::{
-    admin_routes, auth_routes, comments_routes, metrics_routes, posts_routes, review_center_routes,
-    reviews_routes, users_routes,
+    admin_routes, auth_routes, comments_routes, metrics_routes, paper_workflow_routes,
+    posts_routes, review_center_routes, reviews_routes, users_routes,
 };
 
 fn frontend_dist_dir() -> PathBuf {
@@ -67,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
         .nest("/api/posts", posts_routes())
         .nest("/api/posts", comments_routes())
         .nest("/api/posts", reviews_routes())
+        .nest("/api/posts", paper_workflow_routes())
         .nest("/api/reviews", review_center_routes())
         .nest("/api/admin", admin_routes())
         .nest("/api/metrics", metrics_routes())

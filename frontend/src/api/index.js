@@ -104,6 +104,16 @@ export const postsAPI = {
         const response = await api.post(`/posts/${id}/publish`);
         return response.data;
     },
+    getVersions: async (postId, limit = 20, offset = 0) => {
+        const response = await api.get(`/posts/${postId}/versions`, {
+            params: { limit, offset },
+        });
+        return response.data;
+    },
+    getLatestVersion: async (postId) => {
+        const response = await api.get(`/posts/${postId}/versions/latest`);
+        return response.data;
+    },
 };
 
 // Users API
@@ -201,6 +211,32 @@ export const reviewsAPI = {
     },
     rerun: async (postId) => {
         const response = await api.post(`/posts/${postId}/reviews/rerun`);
+        return response.data;
+    },
+};
+
+export const reviewCommentsAPI = {
+    list: async (postId, paperVersionId = null, limit = 100, offset = 0) => {
+        const params = { limit, offset };
+        if (paperVersionId !== null && paperVersionId !== undefined) {
+            params.paper_version_id = paperVersionId;
+        }
+        const response = await api.get(`/posts/${postId}/review-comments`, { params });
+        return response.data;
+    },
+    create: async (postId, content, parentCommentId = null, paperVersionId = null) => {
+        const payload = { content };
+        if (parentCommentId !== null && parentCommentId !== undefined) {
+            payload.parent_comment_id = parentCommentId;
+        }
+        if (paperVersionId !== null && paperVersionId !== undefined) {
+            payload.paper_version_id = paperVersionId;
+        }
+        const response = await api.post(`/posts/${postId}/review-comments`, payload);
+        return response.data;
+    },
+    delete: async (postId, commentId) => {
+        const response = await api.delete(`/posts/${postId}/review-comments/${commentId}`);
         return response.data;
     },
 };

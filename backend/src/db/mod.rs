@@ -51,12 +51,15 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
             is_published BOOLEAN NOT NULL DEFAULT TRUE,
             published_at DATETIME(6) NULL,
             paper_status VARCHAR(32) NOT NULL DEFAULT 'published',
+            current_revision INT UNSIGNED NOT NULL DEFAULT 0,
+            latest_paper_version_id BIGINT NULL,
             created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
             updated_at DATETIME(6) NULL,
             INDEX idx_posts_author_id (author_id),
             INDEX idx_posts_published_created_at (is_published, created_at),
             INDEX idx_posts_category_created_at (category_id, created_at),
             INDEX idx_posts_paper_status_created_at (paper_status, created_at),
+            INDEX idx_posts_latest_paper_version_id (latest_paper_version_id),
             CONSTRAINT chk_posts_paper_status CHECK (paper_status IN ('draft', 'submitted', 'revision', 'accepted', 'published', 'rejected')),
             CONSTRAINT fk_posts_category_id FOREIGN KEY (category_id) REFERENCES post_categories(id),
             CONSTRAINT fk_posts_author_id FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
@@ -74,6 +77,13 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
         "VARCHAR(32) NOT NULL DEFAULT 'published'",
     )
     .await?;
+    ensure_posts_column(
+        &pool,
+        "current_revision",
+        "INT UNSIGNED NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_posts_column(&pool, "latest_paper_version_id", "BIGINT NULL").await?;
     ensure_posts_column(&pool, "github_url", "VARCHAR(2048) NULL").await?;
 
     sqlx::query(
@@ -222,6 +232,34 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS paper_versions (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            post_id BIGINT NOT NULL,
+            version_number INT UNSIGNED NOT NULL,
+            title VARCHAR(255) NOT NULL,
+            content LONGTEXT NOT NULL,
+            summary TEXT NULL,
+            github_url VARCHAR(2048) NULL,
+            file_path TEXT NULL,
+            file_name VARCHAR(255) NULL,
+            tags_json JSON NULL,
+            citations_json JSON NULL,
+            submitted_by BIGINT NULL,
+            submitted_at DATETIME(6) NOT NULL,
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            UNIQUE KEY uq_paper_versions_post_version (post_id, version_number),
+            INDEX idx_paper_versions_post_version (post_id, version_number),
+            INDEX idx_paper_versions_submitted_at (submitted_at),
+            CONSTRAINT fk_paper_versions_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+            CONSTRAINT fk_paper_versions_submitted_by FOREIGN KEY (submitted_by) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS ai_review_statuses (
             id TINYINT UNSIGNED PRIMARY KEY,
             code VARCHAR(32) NOT NULL UNIQUE,
@@ -261,6 +299,7 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
         CREATE TABLE IF NOT EXISTS post_ai_reviews (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             post_id BIGINT NOT NULL,
+            paper_version_id BIGINT NULL,
             status_id TINYINT UNSIGNED NOT NULL,
             trigger_id TINYINT UNSIGNED NOT NULL,
             decision_id TINYINT UNSIGNED NULL,
@@ -283,9 +322,11 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
             error_message TEXT NULL,
             created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
             completed_at DATETIME(6) NULL,
+            INDEX idx_post_ai_reviews_version_created (paper_version_id, created_at),
             INDEX idx_post_ai_reviews_post_created (post_id, created_at),
             INDEX idx_post_ai_reviews_status_created (status_id, created_at),
             CONSTRAINT fk_post_ai_reviews_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+            CONSTRAINT fk_post_ai_reviews_paper_version_id FOREIGN KEY (paper_version_id) REFERENCES paper_versions(id) ON DELETE SET NULL,
             CONSTRAINT fk_post_ai_reviews_status_id FOREIGN KEY (status_id) REFERENCES ai_review_statuses(id),
             CONSTRAINT fk_post_ai_reviews_trigger_id FOREIGN KEY (trigger_id) REFERENCES ai_review_triggers(id),
             CONSTRAINT fk_post_ai_reviews_decision_id FOREIGN KEY (decision_id) REFERENCES ai_review_decisions(id),
@@ -302,6 +343,46 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS paper_review_comments (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            post_id BIGINT NOT NULL,
+            paper_version_id BIGINT NULL,
+            author_id BIGINT NOT NULL,
+            parent_comment_id BIGINT NULL,
+            content TEXT NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at DATETIME(6) NULL,
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            updated_at DATETIME(6) NULL,
+            INDEX idx_paper_review_comments_post_version_created (post_id, paper_version_id, created_at),
+            INDEX idx_paper_review_comments_parent_created (parent_comment_id, created_at),
+            INDEX idx_paper_review_comments_author_created (author_id, created_at),
+            CONSTRAINT fk_paper_review_comments_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+            CONSTRAINT fk_paper_review_comments_version_id FOREIGN KEY (paper_version_id) REFERENCES paper_versions(id) ON DELETE SET NULL,
+            CONSTRAINT fk_paper_review_comments_author_id FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE,
+            CONSTRAINT fk_paper_review_comments_parent_id FOREIGN KEY (parent_comment_id) REFERENCES paper_review_comments(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    ensure_posts_index(
+        &pool,
+        "idx_posts_latest_paper_version_id",
+        "latest_paper_version_id",
+    )
+    .await?;
+    ensure_post_ai_reviews_column(&pool, "paper_version_id", "BIGINT NULL").await?;
+    ensure_post_ai_reviews_index(
+        &pool,
+        "idx_post_ai_reviews_version_created",
+        "paper_version_id, created_at",
+    )
+    .await?;
+
+    sqlx::query(
+        r#"
         INSERT IGNORE INTO post_categories (code, display_name) VALUES
             ('paper', 'Paper'),
             ('essay', 'Essay'),
@@ -312,6 +393,9 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+
+    ensure_posts_latest_paper_version_fk(&pool).await?;
+    ensure_post_ai_reviews_paper_version_fk(&pool).await?;
 
     sqlx::query(
         r#"
@@ -462,6 +546,118 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        INSERT INTO paper_versions (
+            post_id,
+            version_number,
+            title,
+            content,
+            summary,
+            github_url,
+            file_path,
+            file_name,
+            tags_json,
+            citations_json,
+            submitted_by,
+            submitted_at,
+            created_at
+        )
+        SELECT
+            p.id,
+            1,
+            p.title,
+            p.content,
+            p.summary,
+            p.github_url,
+            pf.file_path,
+            pf.file_name,
+            (
+                SELECT
+                    CASE
+                        WHEN COUNT(*) = 0 THEN NULL
+                        ELSE JSON_ARRAYAGG(t.name)
+                    END
+                FROM post_tags pt
+                JOIN tags t ON t.id = pt.tag_id
+                WHERE pt.post_id = p.id
+            ),
+            (
+                SELECT
+                    CASE
+                        WHEN COUNT(*) = 0 THEN NULL
+                        ELSE JSON_ARRAYAGG(pc.cited_post_id)
+                    END
+                FROM post_citations pc
+                WHERE pc.citing_post_id = p.id
+                  AND pc.citation_source_id = 1
+            ),
+            p.author_id,
+            COALESCE(p.updated_at, p.created_at),
+            COALESCE(p.updated_at, p.created_at)
+        FROM posts p
+        JOIN post_categories c ON c.id = p.category_id
+        LEFT JOIN post_files pf ON pf.post_id = p.id
+        LEFT JOIN paper_versions v ON v.post_id = p.id AND v.version_number = 1
+        WHERE c.code = 'paper'
+          AND p.paper_status <> 'draft'
+          AND v.id IS NULL
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE posts p
+        JOIN post_categories c ON c.id = p.category_id
+        SET
+            p.current_revision = COALESCE(
+                (
+                    SELECT MAX(v.version_number)
+                    FROM paper_versions v
+                    WHERE v.post_id = p.id
+                ),
+                0
+            ),
+            p.latest_paper_version_id = (
+                SELECT v2.id
+                FROM paper_versions v2
+                WHERE v2.post_id = p.id
+                ORDER BY v2.version_number DESC, v2.id DESC
+                LIMIT 1
+            )
+        WHERE c.code = 'paper'
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE posts p
+        JOIN post_categories c ON c.id = p.category_id
+        SET
+            p.current_revision = 0,
+            p.latest_paper_version_id = NULL
+        WHERE c.code = 'paper' AND p.paper_status = 'draft'
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE post_ai_reviews r
+        JOIN posts p ON p.id = r.post_id
+        SET r.paper_version_id = p.latest_paper_version_id
+        WHERE r.paper_version_id IS NULL
+          AND p.latest_paper_version_id IS NOT NULL
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
     ensure_posts_paper_status_check(&pool).await?;
 
     if let Ok(admin_username) = std::env::var("ADMIN_USERNAME") {
@@ -522,6 +718,138 @@ async fn ensure_posts_paper_status_check(pool: &MySqlPool) -> Result<(), sqlx::E
     if existing_count == 0 {
         sqlx::query(
             "ALTER TABLE posts ADD CONSTRAINT chk_posts_paper_status CHECK (paper_status IN ('draft', 'submitted', 'revision', 'accepted', 'published', 'rejected'))",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_posts_index(
+    pool: &MySqlPool,
+    index_name: &str,
+    index_columns: &str,
+) -> Result<(), sqlx::Error> {
+    let (existing_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = 'posts'
+          AND index_name = ?
+        "#,
+    )
+    .bind(index_name)
+    .fetch_one(pool)
+    .await?;
+
+    if existing_count == 0 {
+        let create_sql = format!("CREATE INDEX {} ON posts ({})", index_name, index_columns);
+        sqlx::query(&create_sql).execute(pool).await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_post_ai_reviews_column(
+    pool: &MySqlPool,
+    column_name: &str,
+    column_definition: &str,
+) -> Result<(), sqlx::Error> {
+    let (existing_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'post_ai_reviews'
+          AND column_name = ?
+        "#,
+    )
+    .bind(column_name)
+    .fetch_one(pool)
+    .await?;
+
+    if existing_count == 0 {
+        let alter_sql = format!(
+            "ALTER TABLE post_ai_reviews ADD COLUMN {} {}",
+            column_name, column_definition
+        );
+        sqlx::query(&alter_sql).execute(pool).await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_post_ai_reviews_index(
+    pool: &MySqlPool,
+    index_name: &str,
+    index_columns: &str,
+) -> Result<(), sqlx::Error> {
+    let (existing_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = 'post_ai_reviews'
+          AND index_name = ?
+        "#,
+    )
+    .bind(index_name)
+    .fetch_one(pool)
+    .await?;
+
+    if existing_count == 0 {
+        let create_sql = format!(
+            "CREATE INDEX {} ON post_ai_reviews ({})",
+            index_name, index_columns
+        );
+        sqlx::query(&create_sql).execute(pool).await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_posts_latest_paper_version_fk(pool: &MySqlPool) -> Result<(), sqlx::Error> {
+    let (existing_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM information_schema.table_constraints
+        WHERE table_schema = DATABASE()
+          AND table_name = 'posts'
+          AND constraint_name = 'fk_posts_latest_paper_version_id'
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if existing_count == 0 {
+        sqlx::query(
+            "ALTER TABLE posts ADD CONSTRAINT fk_posts_latest_paper_version_id FOREIGN KEY (latest_paper_version_id) REFERENCES paper_versions(id) ON DELETE SET NULL",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_post_ai_reviews_paper_version_fk(pool: &MySqlPool) -> Result<(), sqlx::Error> {
+    let (existing_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM information_schema.table_constraints
+        WHERE table_schema = DATABASE()
+          AND table_name = 'post_ai_reviews'
+          AND constraint_name = 'fk_post_ai_reviews_paper_version_id'
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if existing_count == 0 {
+        sqlx::query(
+            "ALTER TABLE post_ai_reviews ADD CONSTRAINT fk_post_ai_reviews_paper_version_id FOREIGN KEY (paper_version_id) REFERENCES paper_versions(id) ON DELETE SET NULL",
         )
         .execute(pool)
         .await?;

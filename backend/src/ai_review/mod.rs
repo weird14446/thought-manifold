@@ -48,6 +48,8 @@ const REVIEW_SELECT_COLUMNS: &str = r#"
     SELECT
         r.id,
         r.post_id,
+        r.paper_version_id,
+        CAST(pv.version_number AS SIGNED) AS version_number,
         s.code AS status,
         t.code AS trigger_code,
         d.code AS decision,
@@ -77,6 +79,7 @@ const REVIEW_SELECT_FROM: &str = r#"
     JOIN ai_review_statuses s ON s.id = r.status_id
     JOIN ai_review_triggers t ON t.id = r.trigger_id
     LEFT JOIN ai_review_decisions d ON d.id = r.decision_id
+    LEFT JOIN paper_versions pv ON pv.id = r.paper_version_id
 "#;
 
 #[derive(Debug, Clone, Copy)]
@@ -100,6 +103,8 @@ impl ReviewTrigger {
 struct ReviewRow {
     id: i64,
     post_id: i64,
+    paper_version_id: Option<i64>,
+    version_number: Option<i32>,
     status: String,
     trigger_code: String,
     decision: Option<String>,
@@ -141,9 +146,12 @@ struct ReviewCenterRow {
     title: String,
     category: String,
     paper_status: String,
+    current_revision: i32,
     is_published: bool,
     published_at: Option<chrono::DateTime<chrono::Utc>>,
     review_id: Option<i64>,
+    review_paper_version_id: Option<i64>,
+    review_version_number: Option<i32>,
     review_status: Option<String>,
     review_decision: Option<String>,
     review_trigger: Option<String>,
@@ -203,6 +211,7 @@ struct GeminiReviewOutput {
 pub async fn schedule_review(
     pool: &MySqlPool,
     post_id: i64,
+    paper_version_id: Option<i64>,
     trigger: ReviewTrigger,
 ) -> Result<i64, anyhow::Error> {
     let now = Utc::now();
@@ -212,6 +221,7 @@ pub async fn schedule_review(
         r#"
         INSERT INTO post_ai_reviews (
             post_id,
+            paper_version_id,
             status_id,
             trigger_id,
             model,
@@ -222,6 +232,7 @@ pub async fn schedule_review(
         "#,
     )
     .bind(post_id)
+    .bind(paper_version_id)
     .bind(AI_REVIEW_STATUS_PENDING_ID)
     .bind(trigger.id())
     .bind(model)
@@ -247,15 +258,16 @@ pub async fn schedule_review(
 }
 
 pub async fn run_review(pool: &MySqlPool, review_id: i64) -> Result<(), anyhow::Error> {
-    let row: Option<(i64,)> = sqlx::query_as("SELECT post_id FROM post_ai_reviews WHERE id = ?")
+    let row: Option<(i64, Option<i64>)> =
+        sqlx::query_as("SELECT post_id, paper_version_id FROM post_ai_reviews WHERE id = ?")
         .bind(review_id)
         .fetch_optional(pool)
         .await?;
-    let Some((post_id,)) = row else {
+    let Some((post_id, paper_version_id)) = row else {
         return Err(anyhow!("Review not found: {}", review_id));
     };
 
-    let built_input = match build_review_input(pool, post_id).await {
+    let built_input = match build_review_input(pool, post_id, paper_version_id).await {
         Ok(input) => input,
         Err(error) => {
             mark_failed(pool, review_id, &error.to_string(), None, None).await?;
@@ -428,9 +440,12 @@ pub async fn fetch_user_review_center(
             p.title AS title,
             c.code AS category,
             p.paper_status AS paper_status,
+            CAST(p.current_revision AS SIGNED) AS current_revision,
             p.is_published AS is_published,
             p.published_at AS published_at,
             lr.id AS review_id,
+            lr.paper_version_id AS review_paper_version_id,
+            CAST(pv.version_number AS SIGNED) AS review_version_number,
             s.code AS review_status,
             d.code AS review_decision,
             t.code AS review_trigger,
@@ -447,6 +462,7 @@ pub async fn fetch_user_review_center(
             ORDER BY r2.created_at DESC, r2.id DESC
             LIMIT 1
         )
+        LEFT JOIN paper_versions pv ON pv.id = lr.paper_version_id
         LEFT JOIN ai_review_statuses s ON s.id = lr.status_id
         LEFT JOIN ai_review_decisions d ON d.id = lr.decision_id
         LEFT JOIN ai_review_triggers t ON t.id = lr.trigger_id
@@ -474,6 +490,8 @@ pub async fn fetch_user_review_center(
             let latest_review = match (row.review_id, row.review_status, row.review_created_at) {
                 (Some(review_id), Some(status_code), Some(created_at)) => Some(AiReviewSummary {
                     id: review_id,
+                    paper_version_id: row.review_paper_version_id,
+                    version_number: row.review_version_number,
                     status: map_status_code(&status_code),
                     decision: row.review_decision.as_deref().and_then(map_decision_code),
                     trigger: row.review_trigger.unwrap_or_else(|| "unknown".to_string()),
@@ -490,6 +508,7 @@ pub async fn fetch_user_review_center(
                 title: row.title,
                 category: row.category,
                 paper_status: row.paper_status,
+                current_revision: row.current_revision,
                 is_published: row.is_published,
                 published_at: row.published_at,
                 latest_review,
@@ -527,6 +546,8 @@ fn map_review_row(row: ReviewRow) -> AiReviewResponse {
     AiReviewResponse {
         id: row.id,
         post_id: row.post_id,
+        paper_version_id: row.paper_version_id,
+        version_number: row.version_number,
         status: map_status_code(&row.status),
         trigger: row.trigger_code,
         decision: row.decision.as_deref().and_then(map_decision_code),
@@ -588,27 +609,52 @@ fn parse_json_value(raw: Option<String>) -> Option<Value> {
 async fn build_review_input(
     pool: &MySqlPool,
     post_id: i64,
+    paper_version_id: Option<i64>,
 ) -> Result<BuiltReviewInput, anyhow::Error> {
-    let source = sqlx::query_as::<_, ReviewPostSource>(
-        r#"
-        SELECT
-            p.id,
-            p.title,
-            p.summary,
-            p.content,
-            c.code AS category_code,
-            pf.file_path,
-            pf.file_name
-        FROM posts p
-        JOIN post_categories c ON c.id = p.category_id
-        LEFT JOIN post_files pf ON pf.post_id = p.id
-        WHERE p.id = ?
-        "#,
-    )
-    .bind(post_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| anyhow!("Post not found for review: {}", post_id))?;
+    let source = if let Some(version_id) = paper_version_id {
+        sqlx::query_as::<_, ReviewPostSource>(
+            r#"
+            SELECT
+                p.id,
+                v.title,
+                v.summary,
+                v.content,
+                c.code AS category_code,
+                v.file_path,
+                v.file_name
+            FROM posts p
+            JOIN post_categories c ON c.id = p.category_id
+            JOIN paper_versions v ON v.post_id = p.id
+            WHERE p.id = ? AND v.id = ?
+            "#,
+        )
+        .bind(post_id)
+        .bind(version_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| anyhow!("Paper version not found for review: {}", version_id))?
+    } else {
+        sqlx::query_as::<_, ReviewPostSource>(
+            r#"
+            SELECT
+                p.id,
+                p.title,
+                p.summary,
+                p.content,
+                c.code AS category_code,
+                pf.file_path,
+                pf.file_name
+            FROM posts p
+            JOIN post_categories c ON c.id = p.category_id
+            LEFT JOIN post_files pf ON pf.post_id = p.id
+            WHERE p.id = ?
+            "#,
+        )
+        .bind(post_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| anyhow!("Post not found for review: {}", post_id))?
+    };
 
     if source.category_code != "paper" {
         return Err(anyhow!(
@@ -1113,10 +1159,23 @@ async fn mark_completed(
             published_at = NULL,
             updated_at = ?
         WHERE id = (SELECT post_id FROM post_ai_reviews WHERE id = ?)
+          AND (
+              (
+                  (SELECT paper_version_id FROM post_ai_reviews WHERE id = ?) IS NOT NULL
+                  AND (SELECT paper_version_id FROM post_ai_reviews WHERE id = ?) = latest_paper_version_id
+              )
+              OR (
+                  (SELECT paper_version_id FROM post_ai_reviews WHERE id = ?) IS NULL
+                  AND latest_paper_version_id IS NULL
+              )
+          )
         "#,
     )
     .bind(next_paper_status)
     .bind(now)
+    .bind(review_id)
+    .bind(review_id)
+    .bind(review_id)
     .bind(review_id)
     .execute(pool)
     .await?;
