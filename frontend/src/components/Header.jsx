@@ -26,12 +26,29 @@ function Header() {
         return name?.charAt(0)?.toUpperCase() || '?';
     };
 
+    const todayLabel = new Date().toLocaleDateString('ko-KR', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        weekday: 'long',
+    });
+
     return (
         <header className="header">
+            <div className="journal-topbar">
+                <div className="container journal-topbar-inner">
+                    <span>{todayLabel}</span>
+                    <span>Thought Manifold Journal · Vol. 1</span>
+                    <span>AI Review Edition</span>
+                </div>
+            </div>
             <div className="container header-inner">
                 <Link to="/" className="logo">
-                    <span className="logo-icon">💭</span>
-                    Thought Manifold
+                    <span className="logo-icon">TMJ</span>
+                    <span className="logo-text-wrap">
+                        <span className="logo-title">Thought Manifold</span>
+                        <span className="logo-subtitle">Journal of Open Knowledge</span>
+                    </span>
                 </Link>
 
                 <nav className="nav">

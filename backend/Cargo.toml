@@ -45,6 +45,7 @@ rand = "0.9"
 sha2 = "0.10"
 base64 = "0.22"
 urlencoding = "2"
+regex = "1"
 
 # Multipart file upload
 axum-extra = { version = "0.10", features = ["multipart"] }

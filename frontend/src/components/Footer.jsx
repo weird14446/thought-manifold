@@ -4,15 +4,22 @@ function Footer() {
     return (
         <footer className="footer">
             <div className="container">
+                <div className="footer-masthead">
+                    <p className="footer-kicker">THOUGHT MANIFOLD JOURNAL</p>
+                    <h3>Archive, Submission, and Review Navigation</h3>
+                </div>
                 <div className="footer-content">
                     <div className="footer-brand">
                         <Link to="/" className="logo">
-                            <span className="logo-icon">💭</span>
-                            Thought Manifold
+                            <span className="logo-icon">TMJ</span>
+                            <span className="logo-text-wrap">
+                                <span className="logo-title">Thought Manifold</span>
+                                <span className="logo-subtitle">Journal of Open Knowledge</span>
+                            </span>
                         </Link>
                         <p>
-                            학습한 지식을 나누고, 함께 성장하는 커뮤니티.
-                            에세이, 논문, 리포트를 공유하고 영감을 얻으세요.
+                            연구 노트부터 완성 논문까지, 작성-심사-게재 과정을 한 공간에서 운영하는
+                            커뮤니티 저널 플랫폼입니다.
                         </p>
                     </div>
 
@@ -47,7 +54,7 @@ function Footer() {
                 </div>
 
                 <div className="footer-bottom">
-                    <p>&copy; {new Date().getFullYear()} Thought Manifold. All rights reserved.</p>
+                    <p>&copy; {new Date().getFullYear()} Thought Manifold Journal. All rights reserved.</p>
                     <div className="footer-social">
                         <a href="https://github.com" target="_blank" rel="noopener noreferrer" aria-label="GitHub">
                             🐙

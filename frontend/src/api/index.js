@@ -41,11 +41,33 @@ export const authAPI = {
 
 // Posts API
 export const postsAPI = {
-    getPosts: async (page = 1, perPage = 10, category = null, search = null, tag = null) => {
-        const params = { page, per_page: perPage };
-        if (category) params.category = category;
-        if (search) params.search = search;
-        if (tag) params.tag = tag;
+    getPosts: async (pageOrParams = 1, perPage = 10, category = null, search = null, tag = null, extraFilters = null) => {
+        let params;
+
+        if (typeof pageOrParams === 'object' && pageOrParams !== null && !Array.isArray(pageOrParams)) {
+            params = {
+                page: pageOrParams.page ?? 1,
+                per_page: pageOrParams.per_page ?? pageOrParams.perPage ?? 10,
+                ...pageOrParams,
+            };
+        } else {
+            params = { page: pageOrParams, per_page: perPage };
+            if (category) params.category = category;
+            if (search) params.search = search;
+            if (tag) params.tag = tag;
+            if (extraFilters && typeof extraFilters === 'object') {
+                params = { ...params, ...extraFilters };
+            }
+        }
+
+        Object.keys(params).forEach((key) => {
+            const value = params[key];
+            if (value === null || value === undefined || value === '') {
+                delete params[key];
+            }
+        });
+        delete params.perPage;
+
         const response = await api.get('/posts', { params });
         return response.data;
     },

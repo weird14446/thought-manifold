@@ -187,7 +187,7 @@ function EditPost() {
 
     if (loading) {
         return (
-            <main className="upload-page">
+            <main className="upload-page page-compose-layout">
                 <div className="container">
                     <div className="post-detail-skeleton">
                         <div className="skeleton-line skeleton-title" />
@@ -200,14 +200,14 @@ function EditPost() {
     }
 
     return (
-        <main className="upload-page">
+        <main className="upload-page page-compose-layout">
             <div className="container">
                 <div className="upload-header">
                     <h1>✏️ 글 수정</h1>
                     <p>내용을 수정하고 저장하세요.</p>
                 </div>
 
-                <form className="upload-form" onSubmit={handleSubmit}>
+                <form className="upload-form page-compose-form" onSubmit={handleSubmit}>
                     {error && (
                         <div className="form-error">
                             <span className="form-error-icon">⚠️</span>
@@ -354,6 +354,7 @@ function EditPost() {
                             emptyText="입력한 Markdown과 수식이 여기에 렌더링됩니다."
                         />
                         <span className="form-hint">수식은 `$...$`(inline), `$$...$$`(block) 문법을 사용할 수 있습니다.</span>
+                        <span className="form-hint">동적 그래프는 <code>```desmos</code> 코드 블록에 수식을 줄바꿈으로 입력하세요. 예: <code>y=\\sin(x)</code></span>
                     </div>
 
                     {/* File Upload */}

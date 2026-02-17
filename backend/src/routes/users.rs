@@ -16,6 +16,10 @@ use crate::routes::auth::extract_current_user;
 pub struct UpdateProfile {
     pub display_name: Option<String>,
     pub bio: Option<String>,
+    pub introduction: Option<String>,
+    pub hobbies: Option<String>,
+    pub interests: Option<String>,
+    pub research_areas: Option<String>,
 }
 
 pub fn users_routes() -> Router<MySqlPool> {
@@ -113,23 +117,29 @@ async fn update_profile(
         .map(|s| s.trim().to_string())
         .or(current_user.display_name.clone());
 
-    let bio = match &input.bio {
-        Some(b) => {
-            let trimmed = b.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
-        None => current_user.bio.clone(),
-    };
+    let bio = normalize_optional_text(input.bio.as_deref(), current_user.bio.as_deref());
+    let introduction = normalize_optional_text(
+        input.introduction.as_deref(),
+        current_user.introduction.as_deref(),
+    );
+    let hobbies = normalize_optional_text(input.hobbies.as_deref(), current_user.hobbies.as_deref());
+    let interests = normalize_optional_text(input.interests.as_deref(), current_user.interests.as_deref());
+    let research_areas = normalize_optional_text(
+        input.research_areas.as_deref(),
+        current_user.research_areas.as_deref(),
+    );
 
     let now = chrono::Utc::now();
 
-    sqlx::query("UPDATE users SET display_name = ?, bio = ?, updated_at = ? WHERE id = ?")
+    sqlx::query(
+        "UPDATE users SET display_name = ?, bio = ?, introduction = ?, hobbies = ?, interests = ?, research_areas = ?, updated_at = ? WHERE id = ?",
+    )
         .bind(display_name)
         .bind(&bio)
+        .bind(&introduction)
+        .bind(&hobbies)
+        .bind(&interests)
+        .bind(&research_areas)
         .bind(now)
         .bind(current_user.id)
         .execute(&pool)
@@ -153,6 +163,20 @@ async fn update_profile(
         })?;
 
     Ok(Json(UserResponse::from(updated_user)))
+}
+
+fn normalize_optional_text(input: Option<&str>, fallback: Option<&str>) -> Option<String> {
+    match input {
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        None => fallback.map(ToString::to_string),
+    }
 }
 
 async fn get_user_posts(

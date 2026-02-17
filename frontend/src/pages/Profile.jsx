@@ -21,6 +21,21 @@ const categoryEmojis = {
     other: '📁',
 };
 
+const parseProfileItems = (raw) => {
+    if (!raw) return [];
+    const seen = new Set();
+    return raw
+        .split(/[,\n]/)
+        .map(item => item.trim())
+        .filter(item => {
+            if (!item) return false;
+            const key = item.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+};
+
 function Profile() {
     const { id } = useParams();
     const { user: currentUser } = useAuth();
@@ -36,6 +51,10 @@ function Profile() {
     const [editing, setEditing] = useState(false);
     const [editDisplayName, setEditDisplayName] = useState('');
     const [editBio, setEditBio] = useState('');
+    const [editIntroduction, setEditIntroduction] = useState('');
+    const [editHobbies, setEditHobbies] = useState('');
+    const [editInterests, setEditInterests] = useState('');
+    const [editResearchAreas, setEditResearchAreas] = useState('');
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState(null);
 
@@ -63,6 +82,10 @@ function Profile() {
                 setUserMetrics(metricsData);
                 setEditDisplayName(userData.display_name || userData.username || '');
                 setEditBio(userData.bio || '');
+                setEditIntroduction(userData.introduction || '');
+                setEditHobbies(userData.hobbies || '');
+                setEditInterests(userData.interests || '');
+                setEditResearchAreas(userData.research_areas || '');
             } catch (err) {
                 console.error('Failed to fetch profile:', err);
                 if (err.response?.status === 404) {
@@ -86,6 +109,10 @@ function Profile() {
             const updated = await usersAPI.updateProfile({
                 display_name: editDisplayName.trim() || undefined,
                 bio: editBio.trim() || '',
+                introduction: editIntroduction.trim() || '',
+                hobbies: editHobbies.trim() || '',
+                interests: editInterests.trim() || '',
+                research_areas: editResearchAreas.trim() || '',
             });
             setProfileUser(updated);
             setEditing(false);
@@ -102,6 +129,14 @@ function Profile() {
 
     const initial = profileUser?.display_name?.[0] || profileUser?.username?.[0] || '?';
     const displayName = profileUser?.display_name || profileUser?.username || '익명';
+    const hobbyItems = parseProfileItems(profileUser?.hobbies);
+    const interestItems = parseProfileItems(profileUser?.interests);
+    const researchItems = parseProfileItems(profileUser?.research_areas);
+    const hasExtendedProfile =
+        Boolean(profileUser?.introduction?.trim()) ||
+        hobbyItems.length > 0 ||
+        interestItems.length > 0 ||
+        researchItems.length > 0;
     const joinDate = profileUser ? new Date(profileUser.created_at).toLocaleDateString('ko-KR', {
         year: 'numeric',
         month: 'long',
@@ -164,6 +199,54 @@ function Profile() {
                                         <span className="profile-meta-item">📧 {profileUser.email}</span>
                                         <span className="profile-meta-item">📅 {joinDate} 가입</span>
                                     </div>
+
+                                    {hasExtendedProfile ? (
+                                        <div className="profile-extended-grid">
+                                            {profileUser.introduction && (
+                                                <section className="profile-detail-card profile-detail-card-full">
+                                                    <h3>소개</h3>
+                                                    <p>{profileUser.introduction}</p>
+                                                </section>
+                                            )}
+                                            {hobbyItems.length > 0 && (
+                                                <section className="profile-detail-card">
+                                                    <h3>취미</h3>
+                                                    <div className="profile-pill-list">
+                                                        {hobbyItems.map(item => (
+                                                            <span key={item} className="profile-pill">{item}</span>
+                                                        ))}
+                                                    </div>
+                                                </section>
+                                            )}
+                                            {interestItems.length > 0 && (
+                                                <section className="profile-detail-card">
+                                                    <h3>관심분야</h3>
+                                                    <div className="profile-pill-list">
+                                                        {interestItems.map(item => (
+                                                            <span key={item} className="profile-pill">{item}</span>
+                                                        ))}
+                                                    </div>
+                                                </section>
+                                            )}
+                                            {researchItems.length > 0 && (
+                                                <section className="profile-detail-card profile-detail-card-full">
+                                                    <h3>연구분야</h3>
+                                                    <div className="profile-pill-list">
+                                                        {researchItems.map(item => (
+                                                            <span key={item} className="profile-pill">{item}</span>
+                                                        ))}
+                                                    </div>
+                                                </section>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        isOwnProfile && (
+                                            <p className="profile-extended-empty">
+                                                소개, 취미, 관심분야, 연구분야를 추가해 프로필을 완성해보세요.
+                                            </p>
+                                        )
+                                    )}
+
                                     {isOwnProfile && (
                                         <button
                                             className="btn btn-ghost profile-edit-btn"
@@ -192,13 +275,53 @@ function Profile() {
                                         />
                                     </div>
                                     <div className="form-group">
-                                        <label className="form-label">소개</label>
+                                        <label className="form-label">한 줄 소개</label>
                                         <textarea
                                             className="form-input"
                                             value={editBio}
                                             onChange={(e) => setEditBio(e.target.value)}
                                             placeholder="자기소개를 작성하세요..."
                                             rows={3}
+                                        />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">상세 소개</label>
+                                        <textarea
+                                            className="form-input"
+                                            value={editIntroduction}
+                                            onChange={(e) => setEditIntroduction(e.target.value)}
+                                            placeholder="연구/관심사/활동 배경 등을 자유롭게 작성하세요..."
+                                            rows={4}
+                                        />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">취미</label>
+                                        <input
+                                            type="text"
+                                            className="form-input"
+                                            value={editHobbies}
+                                            onChange={(e) => setEditHobbies(e.target.value)}
+                                            placeholder="예: 등산, 사진, 독서 (쉼표로 구분)"
+                                        />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">관심분야</label>
+                                        <input
+                                            type="text"
+                                            className="form-input"
+                                            value={editInterests}
+                                            onChange={(e) => setEditInterests(e.target.value)}
+                                            placeholder="예: AI, 시스템설계, 데이터시각화"
+                                        />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">연구분야</label>
+                                        <input
+                                            type="text"
+                                            className="form-input"
+                                            value={editResearchAreas}
+                                            onChange={(e) => setEditResearchAreas(e.target.value)}
+                                            placeholder="예: LLM 평가, HCI, 추천시스템"
                                         />
                                     </div>
                                     <div className="profile-edit-actions">
@@ -216,6 +339,10 @@ function Profile() {
                                                 setEditing(false);
                                                 setEditDisplayName(profileUser.display_name || profileUser.username || '');
                                                 setEditBio(profileUser.bio || '');
+                                                setEditIntroduction(profileUser.introduction || '');
+                                                setEditHobbies(profileUser.hobbies || '');
+                                                setEditInterests(profileUser.interests || '');
+                                                setEditResearchAreas(profileUser.research_areas || '');
                                                 setSaveError(null);
                                             }}
                                         >
@@ -277,6 +404,7 @@ function Profile() {
                                             <MarkdownRenderer
                                                 content={getPostExcerptMarkdown(post)}
                                                 className="markdown-profile-excerpt"
+                                                enableInteractiveEmbeds={false}
                                             />
                                         </div>
                                         <div className="profile-post-meta">

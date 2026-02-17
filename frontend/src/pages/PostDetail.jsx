@@ -118,6 +118,23 @@ function getPostDeduped(postId, source = null) {
     return promise;
 }
 
+async function copyTextToClipboard(text) {
+    if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'absolute';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+}
+
 function PostDetail() {
     const { id } = useParams();
     const location = useLocation();
@@ -163,6 +180,7 @@ function PostDetail() {
     const [reviewReplyText, setReviewReplyText] = useState('');
     const [reviewReplySubmitting, setReviewReplySubmitting] = useState(false);
     const [reviewReplyError, setReviewReplyError] = useState(null);
+    const [copiedBibtexDoi, setCopiedBibtexDoi] = useState(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -616,6 +634,20 @@ function PostDetail() {
         }
     };
 
+    const handleCopyBibtex = async (doi, bibtex) => {
+        if (!bibtex) return;
+        try {
+            await copyTextToClipboard(bibtex);
+            setCopiedBibtexDoi(doi);
+            window.setTimeout(() => {
+                setCopiedBibtexDoi((current) => (current === doi ? null : current));
+            }, 1500);
+        } catch (copyError) {
+            console.error('Failed to copy BibTeX', copyError);
+            setCopiedBibtexDoi(null);
+        }
+    };
+
     const formattedDate = post ? new Date(post.created_at).toLocaleDateString('ko-KR', {
         year: 'numeric',
         month: 'long',
@@ -847,7 +879,7 @@ function PostDetail() {
 
     if (loading) {
         return (
-            <main className="post-detail-page">
+            <main className="post-detail-page page-article-layout">
                 <div className="container">
                     <div className="post-detail-skeleton">
                         <div className="skeleton-line skeleton-title" />
@@ -863,7 +895,7 @@ function PostDetail() {
 
     if (error) {
         return (
-            <main className="post-detail-page">
+            <main className="post-detail-page page-article-layout">
                 <div className="container">
                     <div className="post-detail-error">
                         <span className="post-detail-error-icon">😥</span>
@@ -878,7 +910,7 @@ function PostDetail() {
     if (!post) return null;
 
     return (
-        <main className="post-detail-page">
+        <main className="post-detail-page page-article-layout">
             <div className="container">
                 <div className="post-detail-wrapper">
                     {/* Back Navigation */}
@@ -887,7 +919,7 @@ function PostDetail() {
                     </Link>
 
                     {/* Article Header */}
-                    <article className="post-detail-article">
+                    <article className="post-detail-article page-article">
                         <header className="post-detail-header">
                             <span className="post-detail-category">
                                 {categoryEmojis[post.category] || '📁'} {categoryLabels[post.category] || post.category}
@@ -937,6 +969,48 @@ function PostDetail() {
                                 >
                                     🔗 GitHub 링크 열기
                                 </a>
+                            )}
+
+                            {Array.isArray(post.doi_metadata) && post.doi_metadata.length > 0 && (
+                                <div className="post-detail-doi-metadata">
+                                    <h3 className="post-detail-doi-title">🔎 DOI 메타데이터</h3>
+                                    <ul className="post-detail-doi-list">
+                                        {post.doi_metadata.map((item) => (
+                                            <li key={item.doi} className="post-detail-doi-item">
+                                                <a
+                                                    href={item.source_url || `https://doi.org/${item.doi}`}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                >
+                                                    DOI: {item.doi}
+                                                </a>
+                                                {item.title && <p className="post-detail-doi-text">{item.title}</p>}
+                                                <p className="post-detail-doi-text">
+                                                    {[item.journal, item.publisher, item.published_at]
+                                                        .filter(Boolean)
+                                                        .join(' · ') || '메타데이터 수집 대기중'}
+                                                </p>
+                                                {item.bibtex && (
+                                                    <div className="post-detail-bibtex">
+                                                        <div className="post-detail-bibtex-header">
+                                                            <span>BibTeX</span>
+                                                            <button
+                                                                type="button"
+                                                                className="post-detail-bibtex-copy"
+                                                                onClick={() => handleCopyBibtex(item.doi, item.bibtex)}
+                                                            >
+                                                                {copiedBibtexDoi === item.doi ? '복사됨' : '복사'}
+                                                            </button>
+                                                        </div>
+                                                        <pre className="post-detail-bibtex-pre">
+                                                            <code>{item.bibtex}</code>
+                                                        </pre>
+                                                    </div>
+                                                )}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
                             )}
                         </header>
 

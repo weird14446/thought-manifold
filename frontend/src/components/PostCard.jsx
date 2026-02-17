@@ -11,7 +11,6 @@ const categoryLabels = {
 };
 
 function PostCard({ post }) {
-    const authorInitial = post.author?.display_name?.[0] || post.author?.username?.[0] || '?';
     const authorName = post.author?.display_name || post.author?.username || '익명';
     const formattedDate = new Date(post.created_at).toLocaleDateString('ko-KR', {
         year: 'numeric',
@@ -23,22 +22,21 @@ function PostCard({ post }) {
     return (
         <Link to={`/posts/${post.id}`} className="post-card">
             <div className="post-card-header">
-                <div className="post-author-avatar">
-                    {authorInitial.toUpperCase()}
-                </div>
-                <div className="post-author-info">
-                    <div className="post-author-name">{authorName}</div>
-                    <div className="post-date">{formattedDate}</div>
-                </div>
                 <span className="post-category">
                     {categoryLabels[post.category] || post.category}
                 </span>
+                <span className="post-date">{formattedDate}</span>
             </div>
 
             <div className="post-card-body">
                 <h3 className="post-title">{post.title}</h3>
+                <p className="post-card-byline">by {authorName}</p>
                 <div className="post-excerpt">
-                    <MarkdownRenderer content={excerptMarkdown} className="markdown-card-excerpt" />
+                    <MarkdownRenderer
+                        content={excerptMarkdown}
+                        className="markdown-card-excerpt"
+                        enableInteractiveEmbeds={false}
+                    />
                 </div>
                 {post.tags && post.tags.length > 0 && (
                     <div className="post-card-tags">
@@ -67,6 +65,7 @@ function PostCard({ post }) {
                         {post.like_count}
                     </span>
                 </div>
+                <span className="post-card-read-more">Read Article</span>
                 {post.file_name && (
                     <span className="post-file-badge">
                         📎 {post.file_name}

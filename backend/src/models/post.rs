@@ -52,9 +52,21 @@ pub struct PostResponse {
     pub like_count: i64,
     pub user_liked: Option<bool>,
     pub metrics: PostMetrics,
+    pub doi_metadata: Vec<PostDoiMetadata>,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostDoiMetadata {
+    pub doi: String,
+    pub title: Option<String>,
+    pub journal: Option<String>,
+    pub publisher: Option<String>,
+    pub published_at: Option<String>,
+    pub source_url: Option<String>,
+    pub bibtex: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,4 +84,11 @@ pub struct PostQuery {
     pub category: Option<String>,
     pub search: Option<String>,
     pub tag: Option<String>,
+    pub author: Option<String>,
+    pub year: Option<i32>,
+    pub paper_status: Option<String>,
+    pub ai_decision: Option<String>,
+    pub min_citation_count: Option<i64>,
+    pub max_citation_count: Option<i64>,
+    pub min_author_g_index: Option<i64>,
 }

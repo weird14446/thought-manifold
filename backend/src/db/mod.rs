@@ -16,6 +16,10 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
             google_id VARCHAR(191) NULL UNIQUE,
             display_name VARCHAR(255) NULL,
             bio TEXT NULL,
+            introduction TEXT NULL,
+            hobbies TEXT NULL,
+            interests TEXT NULL,
+            research_areas TEXT NULL,
             avatar_url TEXT NULL,
             is_admin BOOLEAN NOT NULL DEFAULT FALSE,
             created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -25,6 +29,14 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+
+    ensure_users_column(&pool, "display_name", "VARCHAR(255) NULL").await?;
+    ensure_users_column(&pool, "bio", "TEXT NULL").await?;
+    ensure_users_column(&pool, "introduction", "TEXT NULL").await?;
+    ensure_users_column(&pool, "hobbies", "TEXT NULL").await?;
+    ensure_users_column(&pool, "interests", "TEXT NULL").await?;
+    ensure_users_column(&pool, "research_areas", "TEXT NULL").await?;
+    ensure_users_column(&pool, "avatar_url", "TEXT NULL").await?;
 
     sqlx::query(
         r#"
@@ -224,6 +236,29 @@ pub async fn init_db(database_url: &str) -> Result<MySqlPool, sqlx::Error> {
             CONSTRAINT fk_post_citations_citing_post_id FOREIGN KEY (citing_post_id) REFERENCES posts(id) ON DELETE CASCADE,
             CONSTRAINT fk_post_citations_cited_post_id FOREIGN KEY (cited_post_id) REFERENCES posts(id) ON DELETE CASCADE,
             CONSTRAINT fk_post_citations_source_id FOREIGN KEY (citation_source_id) REFERENCES citation_sources(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS post_doi_metadata (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            post_id BIGINT NOT NULL,
+            doi VARCHAR(255) NOT NULL,
+            title TEXT NULL,
+            journal VARCHAR(512) NULL,
+            publisher VARCHAR(512) NULL,
+            published_at VARCHAR(32) NULL,
+            source_url VARCHAR(2048) NULL,
+            raw_json JSON NULL,
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            updated_at DATETIME(6) NULL,
+            UNIQUE KEY uq_post_doi_metadata_post_doi (post_id, doi),
+            INDEX idx_post_doi_metadata_post_created (post_id, created_at),
+            CONSTRAINT fk_post_doi_metadata_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         "#,
     )
@@ -694,6 +729,35 @@ async fn ensure_posts_column(
     if existing_count == 0 {
         let alter_sql = format!(
             "ALTER TABLE posts ADD COLUMN {} {}",
+            column_name, column_definition
+        );
+        sqlx::query(&alter_sql).execute(pool).await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_users_column(
+    pool: &MySqlPool,
+    column_name: &str,
+    column_definition: &str,
+) -> Result<(), sqlx::Error> {
+    let (existing_count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'users'
+          AND column_name = ?
+        "#,
+    )
+    .bind(column_name)
+    .fetch_one(pool)
+    .await?;
+
+    if existing_count == 0 {
+        let alter_sql = format!(
+            "ALTER TABLE users ADD COLUMN {} {}",
             column_name, column_definition
         );
         sqlx::query(&alter_sql).execute(pool).await?;

@@ -164,18 +164,26 @@ const rebuttalTips = [
 
 function GuidelinesPage() {
     return (
-        <main className="guidelines-page">
-            <section className="guidelines-hero">
-                <div className="container guidelines-hero-content">
-                    <span className="hero-badge">
-                        <span className="hero-badge-icon">📚</span>
-                        Research Paper Guidelines
-                    </span>
-                    <h1>연구 논문 작성과 출간<br />전체 프로세스 가이드</h1>
-                    <p>
-                        아이디어 설계부터 저널 출간까지, 실제 연구자가 따라갈 수 있는
-                        체크리스트 중심의 실무형 가이드입니다. 본 플랫폼에서는 편집자 1차 심사와 동료심사를 AI 심사로 대체합니다.
-                    </p>
+        <main className="guidelines-page about-journal-page">
+            <section className="guidelines-hero guidelines-journal-hero">
+                <div className="container">
+                    <div className="guidelines-hero-content journal-hero-head">
+                        <p className="journal-kicker">AUTHOR GUIDELINES</p>
+                        <span className="hero-badge">
+                            <span className="hero-badge-icon">📚</span>
+                            Research Paper Guidelines
+                        </span>
+                        <h1>연구 논문 작성과 출간<br />전체 프로세스 가이드</h1>
+                        <p>
+                            아이디어 설계부터 저널 출간까지, 실제 연구자가 따라갈 수 있는
+                            체크리스트 중심의 실무형 가이드입니다. 본 플랫폼에서는 편집자 1차 심사와 동료심사를 AI 심사로 대체합니다.
+                        </p>
+                    </div>
+                    <div className="journal-issue-line guidelines-issue-line">
+                        <span>Submission Standards</span>
+                        <span>AI Editorial + Peer Review</span>
+                        <span>Post-Accept Publication Policy</span>
+                    </div>
                 </div>
             </section>
 

@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS users (
   google_id VARCHAR(191) NULL UNIQUE,
   display_name VARCHAR(255) NULL,
   bio TEXT NULL,
+  introduction TEXT NULL,
+  hobbies TEXT NULL,
+  interests TEXT NULL,
+  research_areas TEXT NULL,
   avatar_url TEXT NULL,
   is_admin BOOLEAN NOT NULL DEFAULT FALSE,
   created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -136,6 +140,23 @@ CREATE TABLE IF NOT EXISTS post_citations (
   CONSTRAINT fk_post_citations_citing_post_id FOREIGN KEY (citing_post_id) REFERENCES posts(id) ON DELETE CASCADE,
   CONSTRAINT fk_post_citations_cited_post_id FOREIGN KEY (cited_post_id) REFERENCES posts(id) ON DELETE CASCADE,
   CONSTRAINT fk_post_citations_source_id FOREIGN KEY (citation_source_id) REFERENCES citation_sources(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS post_doi_metadata (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  post_id BIGINT NOT NULL,
+  doi VARCHAR(255) NOT NULL,
+  title TEXT NULL,
+  journal VARCHAR(512) NULL,
+  publisher VARCHAR(512) NULL,
+  published_at VARCHAR(32) NULL,
+  source_url VARCHAR(2048) NULL,
+  raw_json JSON NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NULL,
+  UNIQUE KEY uq_post_doi_metadata_post_doi (post_id, doi),
+  INDEX idx_post_doi_metadata_post_created (post_id, created_at),
+  CONSTRAINT fk_post_doi_metadata_post_id FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS paper_versions (

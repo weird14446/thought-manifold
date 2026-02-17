@@ -107,14 +107,14 @@ function Upload() {
     };
 
     return (
-        <main className="upload-page">
+        <main className="upload-page page-compose-layout">
             <div className="container">
                 <div className="upload-header">
                     <h1>✍️ 새 글 작성</h1>
                     <p>학습한 내용을 정리하고 커뮤니티와 공유하세요.</p>
                 </div>
 
-                <form className="upload-form" onSubmit={handleSubmit}>
+                <form className="upload-form page-compose-form" onSubmit={handleSubmit}>
                     {error && (
                         <div className="form-error">
                             <span className="form-error-icon">⚠️</span>
@@ -258,6 +258,7 @@ function Upload() {
                             emptyText="입력한 Markdown과 수식이 여기에 렌더링됩니다."
                         />
                         <span className="form-hint">수식은 `$...$`(inline), `$$...$$`(block) 문법을 사용할 수 있습니다.</span>
+                        <span className="form-hint">동적 그래프는 <code>```desmos</code> 코드 블록에 수식을 줄바꿈으로 입력하세요. 예: <code>y=x^2</code></span>
                     </div>
 
                     {/* File Upload */}

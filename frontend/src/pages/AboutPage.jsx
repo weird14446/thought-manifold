@@ -2,27 +2,35 @@ import { Link } from 'react-router-dom';
 
 function AboutPage() {
     return (
-        <main className="about-page">
+        <main className="about-page about-journal-page">
             {/* Hero */}
-            <section className="about-hero">
-                <div className="container about-hero-content">
-                    <span className="hero-badge">
-                        <span className="hero-badge-icon">💭</span>
-                        About&nbsp;Thought&nbsp;Manifold
-                    </span>
-                    <h1>생각이 만나고,<br />지식이 확장되는 공간</h1>
-                    <p className="about-hero-lead">
-                        Thought Manifold는 학습한 내용을 체계적으로 정리하고,
-                        다양한 관점에서 영감을 주고받으며 함께 성장하는
-                        지식 공유 커뮤니티입니다.
-                    </p>
+            <section className="about-hero about-journal-hero">
+                <div className="container">
+                    <div className="about-hero-content journal-hero-head">
+                        <p className="journal-kicker">ABOUT THE JOURNAL</p>
+                        <span className="hero-badge">
+                            <span className="hero-badge-icon">💭</span>
+                            About&nbsp;Thought&nbsp;Manifold
+                        </span>
+                        <h1>생각이 만나고,<br />지식이 확장되는 공간</h1>
+                        <p className="about-hero-lead">
+                            Thought Manifold는 학습한 내용을 체계적으로 정리하고,
+                            다양한 관점에서 영감을 주고받으며 함께 성장하는
+                            지식 공유 커뮤니티입니다.
+                        </p>
+                    </div>
+                    <div className="journal-issue-line about-issue-line">
+                        <span>Editorial Overview</span>
+                        <span>Open Knowledge Community</span>
+                        <span>Submission · Review · Publication</span>
+                    </div>
                 </div>
             </section>
 
             {/* 미션 */}
             <section className="about-section">
                 <div className="container">
-                    <div className="about-mission-card">
+                    <div className="about-mission-card journal-board-panel">
                         <h2>우리의 미션</h2>
                         <p>
                             좋은 지식은 나눌수록 커집니다.
