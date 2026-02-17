@@ -154,7 +154,7 @@ async fn fetch_author_paper_citation_counts(
             FROM (
                 SELECT DISTINCT citing_post_id, cited_post_id
                 FROM post_citations
-            )
+            ) distinct_citations
             GROUP BY cited_post_id
         ) c ON c.cited_post_id = p.id
         WHERE p.author_id = ? AND pc.code = 'paper'
