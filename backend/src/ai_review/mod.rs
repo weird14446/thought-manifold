@@ -405,9 +405,9 @@ pub async fn fetch_ai_review_metrics(
             r#"
             SELECT
                 COUNT(*) AS total_reviews,
-                CAST(SUM(CASE WHEN s.code = 'pending' THEN 1 ELSE 0 END) AS SIGNED) AS pending_reviews,
-                CAST(SUM(CASE WHEN s.code = 'completed' THEN 1 ELSE 0 END) AS SIGNED) AS completed_reviews,
-                CAST(SUM(CASE WHEN s.code = 'failed' THEN 1 ELSE 0 END) AS SIGNED) AS failed_reviews
+                CAST(COALESCE(SUM(CASE WHEN s.code = 'pending' THEN 1 ELSE 0 END), 0) AS SIGNED) AS pending_reviews,
+                CAST(COALESCE(SUM(CASE WHEN s.code = 'completed' THEN 1 ELSE 0 END), 0) AS SIGNED) AS completed_reviews,
+                CAST(COALESCE(SUM(CASE WHEN s.code = 'failed' THEN 1 ELSE 0 END), 0) AS SIGNED) AS failed_reviews
             FROM post_ai_reviews r
             JOIN ai_review_statuses s ON s.id = r.status_id
             "#,
