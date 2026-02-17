@@ -65,12 +65,6 @@ pub struct CreateUser {
     pub display_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct LoginUser {
-    pub username: String,
-    pub password: String,
-}
-
 #[derive(Debug, Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
