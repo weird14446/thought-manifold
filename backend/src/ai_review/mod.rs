@@ -228,7 +228,7 @@ pub async fn schedule_review(
             prompt_version,
             language_code,
             created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(post_id)
