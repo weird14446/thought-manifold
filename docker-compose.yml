@@ -1,0 +1,59 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: thought_manifold_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-thought_manifold}
+      MYSQL_USER: ${MYSQL_USER:-tm_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-tm_pass}
+      TZ: ${TZ:-Asia/Seoul}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: thought_manifold_app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-mysql://tm_user:tm_pass@mysql:3306/thought_manifold}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8000}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8000/api/auth/google/callback}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      GEMINI_TIMEOUT_SECS: ${GEMINI_TIMEOUT_SECS:-45}
+      GEMINI_MAX_RETRIES: ${GEMINI_MAX_RETRIES:-3}
+      GEMINI_RETRY_BASE_MS: ${GEMINI_RETRY_BASE_MS:-1500}
+      GEMINI_RETRY_MAX_MS: ${GEMINI_RETRY_MAX_MS:-12000}
+      AI_REVIEW_MAX_INPUT_CHARS: ${AI_REVIEW_MAX_INPUT_CHARS:-24000}
+      CROSSREF_TIMEOUT_SECS: ${CROSSREF_TIMEOUT_SECS:-8}
+      CROSSREF_MAX_DOIS: ${CROSSREF_MAX_DOIS:-10}
+      RUST_LOG: ${RUST_LOG:-info,backend_rust=debug,tower_http=info}
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_uploads:/app/backend/uploads
+
+volumes:
+  mysql_data:
+  backend_uploads:

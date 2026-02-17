@@ -1,0 +1,14 @@
+.git
+.gitignore
+.DS_Store
+
+**/node_modules
+**/target
+**/.env
+
+frontend/dist
+output
+tmp
+
+backend/uploads/*
+!backend/uploads/.gitkeep
