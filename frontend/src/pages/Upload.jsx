@@ -257,8 +257,10 @@ function Upload() {
                             previewClassName="markdown-post markdown-preview"
                             emptyText="입력한 Markdown과 수식이 여기에 렌더링됩니다."
                         />
+                        <span className="form-hint">코드는 <code>```rust</code> / <code>```python</code> 같은 fenced code block으로 작성할 수 있습니다.</span>
                         <span className="form-hint">수식은 `$...$`(inline), `$$...$$`(block) 문법을 사용할 수 있습니다.</span>
                         <span className="form-hint">동적 그래프는 <code>```desmos</code> 코드 블록에 수식을 줄바꿈으로 입력하세요. 예: <code>y=x^2</code></span>
+                        <span className="form-hint">가환도표는 <code>{`\\[\\begin{tikzcd} ... \\end{tikzcd}\\]`}</code> 형식을 그대로 사용하면 렌더링됩니다.</span>
                     </div>
 
                     {/* File Upload */}

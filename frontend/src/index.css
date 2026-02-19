@@ -1109,9 +1109,20 @@ a:hover {
   background: rgba(148, 163, 184, 0.16);
 }
 
+.markdown-body pre {
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, #0f172a 14%);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg-secondary) 72%, #0f172a 28%);
+  color: #e2e8f0;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+
 .markdown-body pre code {
   display: block;
   padding: var(--space-sm);
+  background: transparent;
+  color: inherit;
+  line-height: 1.6;
   overflow-x: auto;
 }
 
@@ -1156,6 +1167,103 @@ a:hover {
   color: #b91c1c;
   border-top: 1px solid var(--border-color);
   background: rgba(239, 68, 68, 0.08);
+}
+
+.tikzcd-diagram {
+  margin: var(--space-sm) 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  overflow: auto;
+}
+
+.tikzcd-header {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.tikzcd-stage {
+  position: relative;
+  min-width: 100%;
+}
+
+.tikzcd-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  color: color-mix(in srgb, var(--text-primary) 88%, #0f172a 12%);
+}
+
+.tikzcd-arrow {
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+
+.tikzcd-arrow.dashed {
+  stroke-dasharray: 7 5;
+}
+
+.tikzcd-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tikzcd-node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, #cbd5e1 16%);
+  background: color-mix(in srgb, var(--bg-primary) 90%, #f8fafc 10%);
+  color: var(--text-primary);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.tikzcd-node .katex {
+  font-size: 1rem;
+}
+
+.tikzcd-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: 0.12rem 0.36rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-primary) 88%, #ffffff 12%);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, #cbd5e1 18%);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.tikzcd-label .katex {
+  font-size: 0.92rem;
+}
+
+.tikzcd-diagram-error {
+  border-style: dashed;
+}
+
+.tikzcd-error-text {
+  margin: 0;
+  padding: 0.7rem 0.8rem 0.25rem;
+  color: #b91c1c;
+  font-size: 0.86rem;
+}
+
+.tikzcd-fallback {
+  margin: 0;
+  padding: 0.7rem 0.8rem 0.8rem;
 }
 
 .markdown-post .katex-display,
